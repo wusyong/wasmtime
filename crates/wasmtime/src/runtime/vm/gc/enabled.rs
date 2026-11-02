@@ -29,6 +29,12 @@ mod copying;
 #[cfg(feature = "gc-copying")]
 pub use copying::*;
 
+// kun: elise, kun's GC.
+#[cfg(feature = "gc-elise")]
+mod elise;
+#[cfg(feature = "gc-elise")]
+pub use elise::*;
+
 /// A hasher that doesn't hash, for use in the trace-info hash map, where we are
 /// just using scalar keys and aren't overly concerned with collision-based DoS.
 #[derive(Default)]

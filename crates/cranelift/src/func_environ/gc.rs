@@ -202,6 +202,12 @@ pub fn gc_compiler(func_env: &mut FuncEnvironment<'_>) -> WasmResult<Box<dyn GcC
 
         Some(Collector::Copying) => Ok(Box::new(copying::CopyingCompiler::default())),
 
+        // kun: elise has no compiler yet; only the host's API reaches its
+        // objects.
+        Some(Collector::Elise) => Err(wasm_unsupported!(
+            "the elise collector doesn't compile GC instructions yet"
+        )),
+
         None => Err(wasm_unsupported!(
             "support for GC types disabled at configuration time"
         )),

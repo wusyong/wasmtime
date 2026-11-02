@@ -542,6 +542,10 @@ pub use self::error::{Error, OutOfMemory, Result, bail, ensure, format_err};
 #[cfg(feature = "reexport-wasmparser")]
 pub use wasmparser;
 
+/// kun: elise, the GC of [`Collector::Elise`], for [`Config::elise_heap`].
+#[cfg(feature = "gc-elise")]
+pub use elise;
+
 fn _assert_send_and_sync<T: Send + Sync>() {}
 
 fn _assertions_lib() {

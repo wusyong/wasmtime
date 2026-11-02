@@ -28,6 +28,8 @@ impl GcCodegenConfig {
             Collector::DeferredReferenceCounting => &DrcTypeLayouts as &dyn GcTypeLayouts,
             Collector::Null => &NullTypeLayouts,
             Collector::Copying => &CopyingTypeLayouts,
+            // kun: `CodeGen::new` refuses it.
+            Collector::Elise => unreachable!("Winch doesn't compile for elise"),
         };
         Self { collector, layouts }
     }
@@ -75,6 +77,8 @@ where
             Collector::DeferredReferenceCounting | Collector::Copying => {
                 self.emit_builtin_gc_raw_alloc(kind, interned, size, align)
             }
+            // kun: `CodeGen::new` refuses it.
+            Collector::Elise => unreachable!("Winch doesn't compile for elise"),
         }
     }
 

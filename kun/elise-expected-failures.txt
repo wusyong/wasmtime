@@ -1,0 +1,13 @@
+# kun: upstream GC tests elise fails, each with why; kun/elise_tests.py reads it.
+# `name  # why`; take a test off once it passes.
+
+arrays::host_sets_array_global                          # compiles GC instructions: elise has no GcCompiler yet
+arrays::host_sets_array_in_table                        # compiles GC instructions: elise has no GcCompiler yet
+arrays::wasm_sets_array_global                          # compiles GC instructions: elise has no GcCompiler yet
+arrays::wasm_sets_array_in_table                        # compiles GC instructions: elise has no GcCompiler yet
+gc::typed_func_nonnull_returns_externref                # compiles GC instructions: elise has no GcCompiler yet
+structs::host_sets_struct_global                        # compiles GC instructions: elise has no GcCompiler yet
+structs::host_sets_struct_in_table                      # compiles GC instructions: elise has no GcCompiler yet
+structs::struct_ref_struct_in_same_rec_group_in_global  # compiles GC instructions: elise has no GcCompiler yet
+structs::wasm_sets_struct_global                        # compiles GC instructions: elise has no GcCompiler yet
+structs::wasm_sets_struct_in_table                      # compiles GC instructions: elise has no GcCompiler yet

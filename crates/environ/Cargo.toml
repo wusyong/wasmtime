@@ -76,6 +76,8 @@ gc = []
 gc-drc = ["gc"]
 gc-null = ["gc"]
 gc-copying = ["gc"]
+# kun: elise, kun's GC, as a collector.
+gc-elise = ["gc"]
 compile = [
   'gimli/write',
   'object/write_core',

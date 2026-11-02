@@ -17,6 +17,8 @@ workspace = true
 
 [dependencies]
 wasmtime-environ = { workspace = true }
+# kun: elise, kun's GC, beside this checkout (`../third_party`).
+elise = { path = "../../../elise/crates/elise", optional = true }
 wasmtime-jit-debug = { workspace = true, optional = true }
 wasmtime-jit-icache-coherence = { workspace = true, optional = true }
 wasmtime-cache = { workspace = true, optional = true }
@@ -297,6 +299,9 @@ gc-null = ["gc", "wasmtime-environ/gc-null"]
 
 # Enable the copying garbage collector.
 gc-copying = ["gc", "wasmtime-environ/gc-copying"]
+
+# kun: enable elise, kun's GC, as a collector (its heap needs `std`).
+gc-elise = ["gc", "std", "wasmtime-environ/gc-elise", "dep:elise"]
 
 # Enable runtime support for the WebAssembly threads proposal.
 threads = ["std"]

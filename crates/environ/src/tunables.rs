@@ -446,6 +446,8 @@ pub enum Collector {
     Null,
     /// The copying collector.
     Copying,
+    /// kun: elise, kun's GC.
+    Elise,
 }
 
 impl fmt::Display for Collector {
@@ -454,6 +456,7 @@ impl fmt::Display for Collector {
             Collector::DeferredReferenceCounting => write!(f, "deferred reference-counting"),
             Collector::Null => write!(f, "null"),
             Collector::Copying => write!(f, "copying"),
+            Collector::Elise => write!(f, "elise"),
         }
     }
 }

@@ -18,6 +18,10 @@ pub mod null;
 #[cfg(feature = "gc-copying")]
 pub mod copying;
 
+// kun: elise, kun's GC.
+#[cfg(feature = "gc-elise")]
+pub mod elise;
+
 use crate::{
     WasmArrayType, WasmCompositeInnerType, WasmCompositeType, WasmExnType, WasmStorageType,
     WasmStructType, WasmValType, error::OutOfMemory, prelude::*,
@@ -83,7 +87,7 @@ pub fn byte_size_of_wasm_ty_in_gc_heap(ty: &WasmStorageType) -> u32 {
 
 /// Align `offset` up to `bytes`, updating `max_align` if `align` is the
 /// new maximum alignment, and returning the aligned offset.
-#[cfg(any(feature = "gc-drc", feature = "gc-null", feature = "gc-copying"))]
+#[cfg(any(feature = "gc-drc", feature = "gc-null", feature = "gc-copying", feature = "gc-elise"))]
 fn align_up(offset: &mut u32, max_align: &mut u32, align: u32) -> u32 {
     debug_assert!(max_align.is_power_of_two());
     debug_assert!(align.is_power_of_two());
@@ -95,7 +99,7 @@ fn align_up(offset: &mut u32, max_align: &mut u32, align: u32) -> u32 {
 /// Define a new field of size and alignment `bytes`, updating the object's
 /// total `size` and `align` as necessary. The offset of the new field is
 /// returned.
-#[cfg(any(feature = "gc-drc", feature = "gc-null", feature = "gc-copying"))]
+#[cfg(any(feature = "gc-drc", feature = "gc-null", feature = "gc-copying", feature = "gc-elise"))]
 fn field(size: &mut u32, align: &mut u32, bytes: u32) -> u32 {
     let offset = align_up(size, align, bytes);
     *size += bytes;
@@ -104,7 +108,7 @@ fn field(size: &mut u32, align: &mut u32, bytes: u32) -> u32 {
 
 /// Common code to define a GC array's layout, given the size and alignment of
 /// the collector's GC header and its expected offset of the array length field.
-#[cfg(any(feature = "gc-drc", feature = "gc-null", feature = "gc-copying"))]
+#[cfg(any(feature = "gc-drc", feature = "gc-null", feature = "gc-copying", feature = "gc-elise"))]
 fn common_array_layout(
     ty: &WasmArrayType,
     header_size: u32,
@@ -147,7 +151,7 @@ fn common_array_layout(
 /// Shared layout code for structs and exception objects, which are
 /// identical except for the tag field (present in
 /// exceptions). Returns `(size, align, fields)`.
-#[cfg(any(feature = "gc-null", feature = "gc-drc", feature = "gc-copying"))]
+#[cfg(any(feature = "gc-null", feature = "gc-drc", feature = "gc-copying", feature = "gc-elise"))]
 fn common_struct_or_exn_layout(
     fields: &[crate::WasmFieldType],
     header_size: u32,
@@ -185,7 +189,7 @@ fn common_struct_or_exn_layout(
 
 /// Common code to define a GC struct's layout, given the size and alignment of
 /// the collector's GC header and its expected offset of the array length field.
-#[cfg(any(feature = "gc-null", feature = "gc-drc", feature = "gc-copying"))]
+#[cfg(any(feature = "gc-null", feature = "gc-drc", feature = "gc-copying", feature = "gc-elise"))]
 fn common_struct_layout(
     ty: &WasmStructType,
     header_size: u32,
@@ -207,7 +211,7 @@ fn common_struct_layout(
 /// Common code to define a GC exception object's layout, given the
 /// size and alignment of the collector's GC header and its expected
 /// offset of the array length field.
-#[cfg(any(feature = "gc-null", feature = "gc-drc", feature = "gc-copying"))]
+#[cfg(any(feature = "gc-null", feature = "gc-drc", feature = "gc-copying", feature = "gc-elise"))]
 fn common_exn_layout(
     ty: &WasmExnType,
     header_size: u32,

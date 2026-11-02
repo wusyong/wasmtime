@@ -155,6 +155,10 @@ impl Engine {
             wasmtime_environ::Module::new(wasmtime_environ::StaticModuleIndex::from_u32(0)),
         )?)?;
 
+        // kun: the type registry holds it too.
+        #[cfg(feature = "runtime")]
+        let gc_runtime = config.build_gc_runtime()?;
+
         Ok(Engine {
             inner: try_new::<Arc<_>>(EngineInner {
                 #[cfg(any(feature = "cranelift", feature = "winch"))]
@@ -172,11 +176,11 @@ impl Engine {
                     allocator
                 },
                 #[cfg(feature = "runtime")]
-                gc_runtime: config.build_gc_runtime()?,
+                gc_runtime: gc_runtime.clone(),
                 #[cfg(feature = "runtime")]
                 profiler: config.build_profiler()?,
                 #[cfg(feature = "runtime")]
-                signatures: TypeRegistry::new(),
+                signatures: TypeRegistry::new(gc_runtime),
                 #[cfg(all(feature = "runtime", target_has_atomic = "64"))]
                 epoch: AtomicU64::new(0),
                 compatible_with_native_host: Default::default(),

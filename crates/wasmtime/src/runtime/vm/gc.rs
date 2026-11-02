@@ -132,7 +132,8 @@ impl GcStore {
 
     /// Get the current capacity (in bytes) of this GC heap.
     pub fn gc_heap_capacity(&self) -> usize {
-        self.gc_heap.heap_slice().len()
+        // kun: the heap says, without a slice of all of it.
+        self.gc_heap.capacity()
     }
 
     /// Asynchronously perform garbage collection within this heap.

@@ -1,6 +1,7 @@
 //! Traits for abstracting over our different garbage collectors.
 
 use crate::bail_bug;
+use crate::error::OutOfMemory;
 use crate::prelude::*;
 use crate::runtime::vm::{
     ExternRefHostDataId, GcHeapObject, GcStoreTraceState, SendSyncPtr, TypedGcRef, VMArrayRef,
@@ -11,7 +12,7 @@ use crate::vm::VMMemoryDefinition;
 use core::ptr::NonNull;
 use core::slice;
 use core::{alloc::Layout, any::Any, marker, mem, ops::Range, ptr};
-use wasmtime_environ::{GcArrayLayout, GcStructLayout, GcTypeLayouts, VMSharedTypeIndex};
+use wasmtime_environ::{GcArrayLayout, GcLayout, GcStructLayout, GcTypeLayouts, VMSharedTypeIndex};
 
 /// Trait for integrating a garbage collector with the runtime.
 ///
@@ -41,6 +42,20 @@ pub unsafe trait GcRuntime: 'static + Send + Sync {
     /// Construct a new GC heap.
     #[cfg(feature = "gc")]
     fn new_gc_heap(&self, engine: &crate::Engine) -> Result<Box<dyn GcHeap>>;
+
+    /// kun: the engine registered the GC type `ty`, of `layout` (none of
+    /// its objects is allocated before).
+    fn register_type(&self, ty: VMSharedTypeIndex, layout: &GcLayout) -> Result<(), OutOfMemory> {
+        let _ = (ty, layout);
+        Ok(())
+    }
+
+    /// kun: the engine unregistered the GC type `ty`: nothing holds it, so
+    /// no store allocates it, nor has a reachable object of it (a store
+    /// holds every type it allocated as long as it lives).
+    fn unregister_type(&self, ty: VMSharedTypeIndex) {
+        let _ = ty;
+    }
 }
 
 /// A heap that manages garbage-collected objects.
@@ -199,6 +214,47 @@ pub unsafe trait GcHeap: 'static + Send + Sync {
     /// heap. Failure to do so is memory safe, but may result in general
     /// failures such as panics or incorrect results.
     fn expose_gc_ref_to_wasm(&mut self, gc_ref: VMGcRef) -> Result<()>;
+
+    /// kun: write barrier for the runtime overwriting the GC reference at
+    /// `offset` of `object` with `source`: a collector that remembers which
+    /// objects point where (a generational one) needs the object, which
+    /// `write_gc_ref` isn't given.
+    ///
+    /// Defaults to `write_gc_ref` on a copy of the field.
+    fn write_gc_ref_in(
+        &mut self,
+        object: &VMGcRef,
+        offset: u32,
+        source: Option<&VMGcRef>,
+    ) -> Result<()> {
+        let raw = self.gc_object_data_mut(object)?.read_u32(offset)?;
+        let mut destination = VMGcRef::from_raw_u32(raw);
+        if crate::vm::GcStore::needs_write_barrier(&mut destination, source) {
+            self.write_gc_ref(&mut destination, source)?;
+        } else {
+            destination = source.map(|s| s.copy_i31());
+        }
+        self.gc_object_data_mut(object)?
+            .write_u32(offset, destination.map_or(0, |r| r.as_raw_u32()))
+    }
+
+    /// kun: barrier for the runtime initializing the GC reference at
+    /// `offset` of `object`, allocated just now, with `source`.
+    ///
+    /// Defaults to `clone_gc_ref`: nothing is overwritten.
+    fn init_gc_ref_in(
+        &mut self,
+        object: &VMGcRef,
+        offset: u32,
+        source: Option<&VMGcRef>,
+    ) -> Result<()> {
+        let raw = match source {
+            None => 0,
+            Some(s) if s.is_i31() => s.as_raw_u32(),
+            Some(s) => self.clone_gc_ref(s).as_raw_u32(),
+        };
+        self.gc_object_data_mut(object)?.write_u32(offset, raw)
+    }
 
     ////////////////////////////////////////////////////////////////////////////
     // `externref` Methods
@@ -440,6 +496,15 @@ pub unsafe trait GcHeap: 'static + Send + Sync {
     /// resized (and its base potentially moves) then that Wasm gets a new,
     /// updated `VMMemoryDefinition` record.
     fn vmmemory(&self) -> VMMemoryDefinition;
+
+    /// kun: the GC heap's capacity, in bytes.
+    ///
+    /// Defaults to `heap_slice`'s length: the GC heap is the whole of the
+    /// memory (a collector whose heap is mostly reserved, not accessible,
+    /// can't make a slice of it).
+    fn capacity(&self) -> usize {
+        self.heap_slice().len()
+    }
 
     /// Get a slice of the raw bytes of the GC heap.
     #[inline]

@@ -162,6 +162,9 @@ pub struct Config {
     target: Option<target_lexicon::Triple>,
     #[cfg(feature = "gc")]
     collector: Collector,
+    /// kun: elise's heap options and platform (`Config::elise_heap`).
+    #[cfg(feature = "gc-elise")]
+    elise_heap: Option<(crate::elise::HeapOptions, Arc<dyn crate::elise::Platform>)>,
     profiling_strategy: ProfilingStrategy,
     tunables: ConfigTunables,
 
@@ -276,6 +279,8 @@ impl Config {
             target: None,
             #[cfg(feature = "gc")]
             collector: Collector::default(),
+            #[cfg(feature = "gc-elise")]
+            elise_heap: None,
             #[cfg(feature = "cache")]
             cache: None,
             profiling_strategy: ProfilingStrategy::None,
@@ -1488,6 +1493,19 @@ impl Config {
     #[cfg(feature = "gc")]
     pub fn collector(&mut self, collector: Collector) -> &mut Self {
         self.collector = collector;
+        self
+    }
+
+    /// kun: the options and platform of each store's heap with
+    /// [`Collector::Elise`]. By default `HeapOptions::default()` and an
+    /// `InlinePlatform`: no thread of its own.
+    #[cfg(feature = "gc-elise")]
+    pub fn elise_heap(
+        &mut self,
+        options: crate::elise::HeapOptions,
+        platform: Arc<dyn crate::elise::Platform>,
+    ) -> &mut Self {
+        self.elise_heap = Some((options, platform));
         self
     }
 
@@ -2818,6 +2836,7 @@ impl Config {
                     Collector::DeferredReferenceCounting => EnvCollector::DeferredReferenceCounting,
                     Collector::Null => EnvCollector::Null,
                     Collector::Copying => EnvCollector::Copying,
+                    Collector::Elise => EnvCollector::Elise,
                     Collector::Auto => unreachable!(),
                 })
             }
@@ -2965,7 +2984,12 @@ impl Config {
 
         #[cfg(feature = "gc")]
         #[cfg_attr(
-            not(any(feature = "gc-null", feature = "gc-drc", feature = "gc-copying")),
+            not(any(
+                feature = "gc-null",
+                feature = "gc-drc",
+                feature = "gc-copying",
+                feature = "gc-elise"
+            )),
             expect(unreachable_code, reason = "definitions known to be dummy")
         )]
         {
@@ -2990,6 +3014,14 @@ impl Config {
                 }
                 #[cfg(not(feature = "gc-copying"))]
                 Collector::Copying => unreachable!(),
+
+                // kun: elise, kun's GC.
+                #[cfg(feature = "gc-elise")]
+                Collector::Elise => try_new::<Arc<_>>(crate::runtime::vm::EliseCollector::new(
+                    self.elise_heap.clone(),
+                )?)? as _,
+                #[cfg(not(feature = "gc-elise"))]
+                Collector::Elise => unreachable!(),
 
                 Collector::Auto => unreachable!(),
             }))
@@ -3693,6 +3725,13 @@ pub enum Collector {
     /// Note that this collector is still under construction and is not yet
     /// functional.
     Copying,
+
+    /// kun: elise, kun's GC: a generational, concurrently marking collector
+    /// whose heap is its own 4 GiB cage (the GC heap's memory is only held).
+    ///
+    /// It doesn't compile GC instructions yet: only the host's API reaches
+    /// its objects. It is never chosen as `Auto`.
+    Elise,
 }
 
 impl Default for Collector {
@@ -3745,6 +3784,15 @@ impl Collector {
             Some(Collector::Copying) => bail!(
                 "cannot create an engine using the copying collector because \
                  the `gc-copying` feature was not enabled at compile time",
+            ),
+
+            // kun: elise is chosen only by name, never as `Auto`.
+            #[cfg(feature = "gc-elise")]
+            Some(c @ Collector::Elise) => Ok(c),
+            #[cfg(not(feature = "gc-elise"))]
+            Some(Collector::Elise) => bail!(
+                "cannot create an engine using the elise collector because \
+                 the `gc-elise` feature was not enabled at compile time",
             ),
 
             Some(Collector::Auto) => unreachable!(),

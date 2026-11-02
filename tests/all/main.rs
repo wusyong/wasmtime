@@ -15,6 +15,9 @@ mod custom_code_memory;
 mod debug;
 mod debug_component;
 mod defaults;
+// kun: elise, kun's GC, as the collector.
+#[cfg(feature = "gc-elise")]
+mod elise;
 mod engine;
 mod epoch_interruption;
 mod eqref;
@@ -145,6 +148,23 @@ pub(crate) fn gc_engine() -> Result<wasmtime::Engine> {
     let mut config = wasmtime::Config::new();
     config.wasm_function_references(true);
     config.wasm_gc(true);
+    // kun: `WASMTIME_TEST_COLLECTOR=elise` runs these tests with elise,
+    // kun's GC, checking its heap after each GC; `elise-stress` GCs at each
+    // allocation too.
+    #[cfg(feature = "gc-elise")]
+    if let Ok(collector @ ("elise" | "elise-stress")) =
+        std::env::var("WASMTIME_TEST_COLLECTOR").as_deref()
+    {
+        config.collector(wasmtime::Collector::Elise);
+        config.elise_heap(
+            wasmtime::elise::HeapOptions {
+                verify: true,
+                stress: collector == "elise-stress",
+                ..Default::default()
+            },
+            std::sync::Arc::new(wasmtime::elise::InlinePlatform),
+        );
+    }
 
     wasmtime::Engine::new(&config)
 }

@@ -145,6 +145,12 @@ where
         wasm_features: &WasmFeatures,
     ) -> Result<CodeGen<'a, 'translation, 'data, M, Prologue>> {
         let gc_codegen_config = match tunables.collector {
+            // kun: elise has no compiler in Winch.
+            Some(wasmtime_environ::Collector::Elise) => {
+                return Err(format_err!(wasm_unsupported!(
+                    "Winch doesn't compile for the elise collector"
+                )));
+            }
             Some(collector) => Some(GcCodegenConfig::new(collector)),
             None if wasm_features.contains(WasmFeatures::EXCEPTIONS) => {
                 return Err(format_err!(wasm_unsupported!(
