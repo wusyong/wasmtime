@@ -489,7 +489,9 @@ fn grow_gc_heap(store: &mut dyn VMStore, _instance: InstanceId, bytes_needed: u6
 /// Allocate a raw, unininitialized GC object for Wasm code.
 ///
 /// The Wasm code is responsible for initializing the object.
-#[cfg(any(feature = "gc-drc", feature = "gc-copying"))]
+///
+/// kun: elise's too.
+#[cfg(any(feature = "gc-drc", feature = "gc-copying", feature = "gc-elise"))]
 fn gc_alloc_raw(
     store: &mut dyn VMStore,
     _instance: InstanceId,
@@ -544,6 +546,29 @@ fn gc_alloc_raw(
 
         store.unwrap_gc_store_mut().expose_gc_ref_to_wasm(gc_ref)
     })?
+}
+
+/// kun: elise's write barrier's SATB slow path: `old`, the value of a
+/// reference field compiled code is overwriting while a marking runs.
+#[cfg(feature = "gc-elise")]
+fn elise_satb(store: &mut dyn VMStore, _instance: InstanceId, old: u32) -> Result<()> {
+    log::trace!("elise_satb({old:#x})");
+    let gc_store = store.store_opaque_mut().unwrap_gc_store_mut();
+    crate::runtime::vm::elise_satb(&mut *gc_store.gc_heap, old)
+}
+
+/// kun: elise's write barrier's generational slow path: compiled code wrote
+/// `value`, a young object's reference, at `slot`, an old object's field.
+#[cfg(feature = "gc-elise")]
+fn elise_remember(
+    store: &mut dyn VMStore,
+    _instance: InstanceId,
+    slot: u32,
+    value: u32,
+) -> Result<()> {
+    log::trace!("elise_remember({slot:#x}, {value:#x})");
+    let gc_store = store.store_opaque_mut().unwrap_gc_store_mut();
+    crate::runtime::vm::elise_remember(&mut *gc_store.gc_heap, slot, value)
 }
 
 // Intern a `funcref` into the GC heap, returning its `FuncRefTableId`.

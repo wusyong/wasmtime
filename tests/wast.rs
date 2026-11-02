@@ -33,10 +33,25 @@ fn main() {
         compilers.truncate(1);
     }
 
+    // kun: with `WASMTIME_TEST_COLLECTOR=elise` (or `elise-stress`, as
+    // `gc_engine()` in `tests/all/main.rs` reads it), only the tests of GC
+    // types, with elise as the collector, compiled by Cranelift natively and
+    // for Pulley (Winch refuses elise).
+    let elise = std::env::var("WASMTIME_TEST_COLLECTOR")
+        .is_ok_and(|collector| collector == "elise" || collector == "elise-stress");
+    if elise {
+        compilers = vec![Compiler::CraneliftNative, Compiler::CraneliftPulley];
+        compilers.retain(|c| c.supports_host());
+    }
+
     // Run each wast test in a few interesting configuration combinations, but
     // leave the full combinatorial matrix and such to fuzz testing which
     // configures many more settings than those configured here.
     for test in tests {
+        if elise && !test.test_uses_gc_types() {
+            continue;
+        }
+
         if test.config.stack_switching() && !cfg!(all(target_arch = "x86_64", target_os = "linux"))
         {
             continue;
@@ -56,7 +71,11 @@ fn main() {
             let config = WastConfig {
                 compiler: *compiler,
                 pooling: false,
-                collector: Collector::Auto,
+                collector: if elise {
+                    Collector::Elise
+                } else {
+                    Collector::Auto
+                },
             };
             let name = format!("{compiler:?}/{name}");
 
@@ -106,6 +125,21 @@ fn run_wast(test: &WastTest, config: WastConfig) -> wasmtime::Result<()> {
     cfg.shared_memory(true);
     wasmtime_test_util::wasmtime_wast::apply_test_config(&mut cfg, &test_config);
     wasmtime_test_util::wasmtime_wast::apply_wast_config(&mut cfg, &config);
+    // kun: elise checks its heap after each GC, and with `elise-stress` GCs
+    // at each allocation too.
+    #[cfg(feature = "gc-elise")]
+    if config.collector == Collector::Elise {
+        let stress = std::env::var("WASMTIME_TEST_COLLECTOR").is_ok_and(|c| c == "elise-stress");
+        let options = wasmtime::elise::HeapOptions {
+            verify: true,
+            stress,
+            ..Default::default()
+        };
+        cfg.elise_heap(
+            options,
+            std::sync::Arc::new(wasmtime::elise::InlinePlatform),
+        );
+    }
 
     if is_cranelift {
         cfg.cranelift_debug_verifier(true);

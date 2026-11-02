@@ -6,8 +6,12 @@
 //! store's roots (the host's, globals', tables'), keep what they reach and
 //! give an `externref`'s host data back once it dies; one an allocation
 //! finds due is elise's to choose, the embedder's is a full GC; a marking
-//! runs a step at a time between the host's writes. Every heap of these
-//! checks itself after each GC.
+//! runs a step at a time between the host's writes. Compiled code's writes
+//! keep the young objects old ones refer to (`struct.set`, `array.set`,
+//! `array.fill`, `array.copy`, a large array's initial elements), its locals
+//! follow what a GC moves, its globals' and tables' writes hold what they
+//! refer to, and a marking runs a step at a time between its writes. Every
+//! heap of these checks itself after each GC.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -672,5 +676,467 @@ fn a_marking_steps_between_the_hosts_writes() -> Result<()> {
         }
     }
     assert!(steps.ran.load(Ordering::SeqCst) > 0, "a marking ran a step");
+    Ok(())
+}
+
+/// Compiled code's reads and writes, its barriers', of `$s` and `$a`
+/// objects, and of a global's and a table's.
+const WAT: &str = r#"
+    (module
+        (type $s (struct (field (mut i64)) (field (mut anyref))))
+        (type $a (array (mut anyref)))
+        (import "" "gc" (func $gc))
+        (global $g (mut anyref) (ref.null any))
+        (table $t 1 anyref)
+
+        (func $s (param $v i64) (result (ref $s))
+            (struct.new $s (local.get $v) (ref.null any)))
+        (func (export "new_s") (param $v i64) (result anyref)
+            (call $s (local.get $v)))
+        (func (export "new_a") (param $len i32) (result anyref)
+            (array.new $a (ref.null any) (local.get $len)))
+        (func (export "new_a_of") (param $len i32) (param $v i64) (result anyref)
+            (array.new $a (call $s (local.get $v)) (local.get $len)))
+
+        (func (export "value") (param $o anyref) (result i64)
+            (struct.get $s 0 (ref.cast (ref $s) (local.get $o))))
+        (func (export "next") (param $o anyref) (result anyref)
+            (struct.get $s 1 (ref.cast (ref $s) (local.get $o))))
+        (func (export "element") (param $o anyref) (param $i i32) (result anyref)
+            (array.get $a (ref.cast (ref $a) (local.get $o)) (local.get $i)))
+
+        (func (export "struct_set") (param $o anyref) (param $v i64)
+            (struct.set $s 1 (ref.cast (ref $s) (local.get $o)) (call $s (local.get $v))))
+        (func (export "array_set") (param $o anyref) (param $i i32) (param $v i64)
+            (array.set $a (ref.cast (ref $a) (local.get $o)) (local.get $i)
+                (call $s (local.get $v))))
+        (func (export "array_fill") (param $o anyref) (param $v i64)
+            (local $a (ref $a))
+            (local.set $a (ref.cast (ref $a) (local.get $o)))
+            (array.fill $a (local.get $a) (i32.const 0) (call $s (local.get $v))
+                (array.len (local.get $a))))
+        (func (export "array_copy") (param $o anyref) (param $v i64)
+            (local $a (ref $a))
+            (local $from (ref $a))
+            (local.set $a (ref.cast (ref $a) (local.get $o)))
+            (local.set $from
+                (array.new $a (call $s (local.get $v)) (array.len (local.get $a))))
+            (array.copy $a $a (local.get $a) (i32.const 0) (local.get $from) (i32.const 0)
+                (array.len (local.get $a))))
+        ;; What `from[i]` holds is cleared there, then written at `to[j]`.
+        (func (export "move") (param $from anyref) (param $i i32) (param $to anyref) (param $j i32)
+            (local $v anyref)
+            (local.set $v (array.get $a (ref.cast (ref $a) (local.get $from)) (local.get $i)))
+            (array.set $a (ref.cast (ref $a) (local.get $from)) (local.get $i) (ref.null any))
+            (array.set $a (ref.cast (ref $a) (local.get $to)) (local.get $j) (local.get $v)))
+        (func (export "spread") (param $from anyref) (param $i i32) (param $len i32) (result anyref)
+            (local $v anyref)
+            (local $to anyref)
+            (local.set $v (array.get $a (ref.cast (ref $a) (local.get $from)) (local.get $i)))
+            (local.set $to (array.new $a (local.get $v) (local.get $len)))
+            (array.set $a (ref.cast (ref $a) (local.get $from)) (local.get $i) (ref.null any))
+            (local.get $to))
+
+        (func (export "set_global") (param $v i64)
+            (global.set $g (call $s (local.get $v))))
+        (func (export "global") (result anyref)
+            (global.get $g))
+        (func (export "set_table") (param $v i64)
+            (table.set $t (i32.const 0) (call $s (local.get $v))))
+        (func (export "table") (result anyref)
+            (table.get $t (i32.const 0)))
+
+        ;; A local held across the host's GC, and across `n` allocations
+        ;; (a list), each a GC under stress.
+        (func (export "across_a_gc") (param $v i64) (result i64)
+            (local $l (ref $s))
+            (local.set $l (call $s (local.get $v)))
+            (call $gc)
+            (struct.get $s 0 (local.get $l)))
+        (func (export "across_allocations") (param $v i64) (param $n i32) (result i64)
+            (local $l (ref $s))
+            (local $head anyref)
+            (local.set $l (call $s (local.get $v)))
+            (block $done
+                (loop $more
+                    (br_if $done (i32.eqz (local.get $n)))
+                    (local.set $head (struct.new $s (i64.const 0) (local.get $head)))
+                    (local.set $n (i32.sub (local.get $n) (i32.const 1)))
+                    (br $more)))
+            (struct.get $s 0 (local.get $l)))
+    )
+"#;
+
+type AnyRefArg = Option<Rooted<AnyRef>>;
+
+/// `WAT`'s exports.
+struct Wasm {
+    new_s: TypedFunc<i64, AnyRefArg>,
+    new_a: TypedFunc<i32, AnyRefArg>,
+    new_a_of: TypedFunc<(i32, i64), AnyRefArg>,
+    value: TypedFunc<AnyRefArg, i64>,
+    next: TypedFunc<AnyRefArg, AnyRefArg>,
+    element: TypedFunc<(AnyRefArg, i32), AnyRefArg>,
+    struct_set: TypedFunc<(AnyRefArg, i64), ()>,
+    array_set: TypedFunc<(AnyRefArg, i32, i64), ()>,
+    array_fill: TypedFunc<(AnyRefArg, i64), ()>,
+    array_copy: TypedFunc<(AnyRefArg, i64), ()>,
+    moves: TypedFunc<(AnyRefArg, i32, AnyRefArg, i32), ()>,
+    /// A new `$a` of a length, each element an element of another's, which
+    /// is cleared after.
+    spread: TypedFunc<(AnyRefArg, i32, i32), AnyRefArg>,
+    set_global: TypedFunc<i64, ()>,
+    global: TypedFunc<(), AnyRefArg>,
+    set_table: TypedFunc<i64, ()>,
+    table: TypedFunc<(), AnyRefArg>,
+    across_a_gc: TypedFunc<i64, i64>,
+    across_allocations: TypedFunc<(i64, i32), i64>,
+}
+
+impl Wasm {
+    fn new(store: &mut Store<()>) -> Result<Self> {
+        let module = Module::new(store.engine(), WAT)?;
+        let gc = Func::wrap(&mut *store, |mut caller: Caller<'_, ()>| caller.gc(None));
+        let instance = Instance::new(&mut *store, &module, &[gc.into()])?;
+        let mut store = &mut *store;
+        Ok(Self {
+            new_s: instance.get_typed_func(&mut store, "new_s")?,
+            new_a: instance.get_typed_func(&mut store, "new_a")?,
+            new_a_of: instance.get_typed_func(&mut store, "new_a_of")?,
+            value: instance.get_typed_func(&mut store, "value")?,
+            next: instance.get_typed_func(&mut store, "next")?,
+            element: instance.get_typed_func(&mut store, "element")?,
+            struct_set: instance.get_typed_func(&mut store, "struct_set")?,
+            array_set: instance.get_typed_func(&mut store, "array_set")?,
+            array_fill: instance.get_typed_func(&mut store, "array_fill")?,
+            array_copy: instance.get_typed_func(&mut store, "array_copy")?,
+            moves: instance.get_typed_func(&mut store, "move")?,
+            spread: instance.get_typed_func(&mut store, "spread")?,
+            set_global: instance.get_typed_func(&mut store, "set_global")?,
+            global: instance.get_typed_func(&mut store, "global")?,
+            set_table: instance.get_typed_func(&mut store, "set_table")?,
+            table: instance.get_typed_func(&mut store, "table")?,
+            across_a_gc: instance.get_typed_func(&mut store, "across_a_gc")?,
+            across_allocations: instance.get_typed_func(&mut store, "across_allocations")?,
+        })
+    }
+
+    /// The value of the `$s` that `object` is, or (with `element`) that
+    /// that element of the `$a` `object` is, read by compiled code.
+    fn value_of(
+        &self,
+        store: &mut Store<()>,
+        object: &OwnedRooted<AnyRef>,
+        element: Option<u32>,
+    ) -> Result<i64> {
+        let mut scope = RootScope::new(store);
+        let mut object = Some(object.to_rooted(&mut scope));
+        if let Some(i) = element {
+            object = self.element.call(&mut scope, (object, i32::try_from(i)?))?;
+        }
+        self.value.call(&mut scope, object)
+    }
+
+    /// The value of the `$s` that the `$s` `object` refers to.
+    fn next_value(&self, store: &mut Store<()>, object: &OwnedRooted<AnyRef>) -> Result<i64> {
+        let mut scope = RootScope::new(store);
+        let object = Some(object.to_rooted(&mut scope));
+        let next = self.next.call(&mut scope, object)?;
+        self.value.call(&mut scope, next)
+    }
+
+    /// A new `$a` of `len` nulls, owned.
+    fn owned_array(&self, store: &mut Store<()>, len: i32) -> Result<OwnedRooted<AnyRef>> {
+        let mut scope = RootScope::new(store);
+        let array = self.new_a.call(&mut scope, len)?.unwrap();
+        array.to_owned_rooted(&mut scope)
+    }
+
+    /// `object` written by compiled code: `write` given it.
+    fn write(
+        &self,
+        store: &mut Store<()>,
+        object: &OwnedRooted<AnyRef>,
+        write: impl FnOnce(&Self, &mut RootScope<&mut Store<()>>, AnyRefArg) -> Result<()>,
+    ) -> Result<()> {
+        let mut scope = RootScope::new(store);
+        let object = Some(object.to_rooted(&mut scope));
+        write(self, &mut scope, object)
+    }
+}
+
+/// A heap whose allocations' GCs are scavenges: a 64 KiB nursery, and no
+/// full GC due for long.
+fn generational() -> HeapOptions {
+    HeapOptions {
+        nursery_bytes: 64 << 10,
+        max_nursery_bytes: 64 << 10,
+        min_allocation_bytes: 64 << 20,
+        ..verified()
+    }
+}
+
+/// Allocates until an allocation's GC, a scavenge in a `generational`
+/// heap, ran: a young `externref` let go is dropped.
+fn scavenge(store: &mut Store<()>) -> Result<()> {
+    let young = Arc::new(AtomicUsize::new(0));
+    {
+        let mut scope = RootScope::new(&mut *store);
+        ExternRef::new(&mut scope, Counted(young.clone()))?;
+    }
+    let ty = ArrayType::new(
+        store.engine(),
+        FieldType::new(Mutability::Var, StorageType::I8),
+    );
+    let pre = ArrayRefPre::new(&mut *store, ty);
+    for _ in 0..10_000 {
+        if young.load(Ordering::SeqCst) == 1 {
+            return Ok(());
+        }
+        let mut scope = RootScope::new(&mut *store);
+        ArrayRef::new(&mut scope, &pre, &Val::I32(0), 1024)?;
+    }
+    bail!("no scavenge ran")
+}
+
+#[test]
+fn compiled_writes_keep_the_young_objects_old_ones_refer_to() -> Result<()> {
+    let engine = engine_with(&mut Config::new(), generational(), Arc::new(InlinePlatform))?;
+    let mut store = Store::new(&engine, ());
+    let wasm = Wasm::new(&mut store)?;
+    let s = {
+        let mut scope = RootScope::new(&mut store);
+        let s = wasm.new_s.call(&mut scope, 0)?.unwrap();
+        s.to_owned_rooted(&mut scope)?
+    };
+    let set = wasm.owned_array(&mut store, 4)?;
+    let fill = wasm.owned_array(&mut store, 4)?;
+    let copy = wasm.owned_array(&mut store, 4)?;
+    // All old, then each written a young `$s` by compiled code.
+    store.gc(None)?;
+    wasm.write(&mut store, &s, |w, scope, o| {
+        w.struct_set.call(scope, (o, 1))
+    })?;
+    wasm.write(&mut store, &set, |w, scope, o| {
+        w.array_set.call(scope, (o, 2, 2))
+    })?;
+    wasm.write(&mut store, &fill, |w, scope, o| {
+        w.array_fill.call(scope, (o, 3))
+    })?;
+    wasm.write(&mut store, &copy, |w, scope, o| {
+        w.array_copy.call(scope, (o, 4))
+    })?;
+    scavenge(&mut store)?;
+    assert_eq!(wasm.next_value(&mut store, &s)?, 1, "struct.set");
+    assert_eq!(wasm.value_of(&mut store, &set, Some(2))?, 2, "array.set");
+    for i in 0..4 {
+        assert_eq!(wasm.value_of(&mut store, &fill, Some(i))?, 3, "array.fill");
+        assert_eq!(wasm.value_of(&mut store, &copy, Some(i))?, 4, "array.copy");
+    }
+    Ok(())
+}
+
+#[test]
+fn a_large_arrays_initial_elements_survive_a_scavenge() -> Result<()> {
+    let engine = engine_with(&mut Config::new(), generational(), Arc::new(InlinePlatform))?;
+    let mut store = Store::new(&engine, ());
+    let wasm = Wasm::new(&mut store)?;
+    // Larger than a page: allocated old, its elements initialized to a
+    // young `$s`.
+    let len = 1 << 17;
+    let array = {
+        let mut scope = RootScope::new(&mut store);
+        let array = wasm.new_a_of.call(&mut scope, (len, 7))?.unwrap();
+        array.to_owned_rooted(&mut scope)?
+    };
+    scavenge(&mut store)?;
+    let last = u32::try_from(len - 1)?;
+    assert_eq!(wasm.value_of(&mut store, &array, Some(0))?, 7);
+    assert_eq!(wasm.value_of(&mut store, &array, Some(last))?, 7);
+    Ok(())
+}
+
+#[test]
+fn compiled_codes_locals_follow_the_objects_a_gc_moves() -> Result<()> {
+    let mut store = stressed_store()?;
+    let wasm = Wasm::new(&mut store)?;
+    assert_eq!(wasm.across_a_gc.call(&mut store, 5)?, 5);
+    assert_eq!(wasm.across_allocations.call(&mut store, (6, 200))?, 6);
+    Ok(())
+}
+
+#[test]
+fn compiled_writes_of_globals_and_tables_hold_what_they_refer_to() -> Result<()> {
+    let engine = engine_with(&mut Config::new(), generational(), Arc::new(InlinePlatform))?;
+    let mut store = Store::new(&engine, ());
+    let wasm = Wasm::new(&mut store)?;
+    wasm.set_global.call(&mut store, 1)?;
+    wasm.set_table.call(&mut store, 2)?;
+    scavenge(&mut store)?;
+    store.gc(None)?;
+    let mut scope = RootScope::new(&mut store);
+    let global = wasm.global.call(&mut scope, ())?;
+    assert_eq!(wasm.value.call(&mut scope, global)?, 1);
+    let table = wasm.table.call(&mut scope, ())?;
+    assert_eq!(wasm.value.call(&mut scope, table)?, 2);
+    Ok(())
+}
+
+#[test]
+fn a_marking_steps_between_compiled_writes() -> Result<()> {
+    // Each allocation GCs: by turns a scavenge, and a marking's start or
+    // end; the marker runs a step between compiled code's calls.
+    let steps = Arc::new(Stepping::default());
+    let engine = engine_with(
+        &mut Config::new(),
+        stressed(),
+        Arc::new(Steps(steps.clone())),
+    )?;
+    let mut store = Store::new(&engine, ());
+    let wasm = Wasm::new(&mut store)?;
+    let mut arrays = Vec::new();
+    for _ in 0..4 {
+        arrays.push(wasm.owned_array(&mut store, 8)?);
+    }
+    // What each slot holds: none, or the value of the `$s` in it.
+    let mut model = [[None::<i64>; 8]; 4];
+    let mut seed = 1_u64;
+    let mut random = |n: u64| {
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (seed >> 33) % n
+    };
+    for round in 0..400_i64 {
+        let (a, i) = (usize::try_from(random(4))?, random(8));
+        let i_at = usize::try_from(i)?;
+        let i = i32::try_from(i)?;
+        if random(3) == 0 {
+            // A new `$s` (a GC first) into a slot.
+            wasm.write(&mut store, &arrays[a], |w, scope, o| {
+                w.array_set.call(scope, (o, i, round))
+            })?;
+            model[a][i_at] = Some(round);
+        } else {
+            // Moved to another slot, its own cleared: the marker may have
+            // scanned where it goes and not where it was.
+            let (b, j) = (usize::try_from(random(4))?, random(8));
+            let j_at = usize::try_from(j)?;
+            let j = i32::try_from(j)?;
+            let to = &arrays[b];
+            wasm.write(&mut store, &arrays[a], |w, scope, o| {
+                let to = Some(to.to_rooted(&mut *scope));
+                w.moves.call(scope, (o, i, to, j))
+            })?;
+            let moved = model[a][i_at].take();
+            model[b][j_at] = moved;
+        }
+        steps.step();
+        for (a, slots) in model.iter().enumerate() {
+            for (i, &value) in slots.iter().enumerate() {
+                let i = u32::try_from(i)?;
+                let read = match value {
+                    Some(_) => Some(wasm.value_of(&mut store, &arrays[a], Some(i))?),
+                    None => {
+                        let mut scope = RootScope::new(&mut store);
+                        let array = Some(arrays[a].to_rooted(&mut scope));
+                        let element = wasm.element.call(&mut scope, (array, i32::try_from(i)?))?;
+                        element.map(|_| -1)
+                    }
+                };
+                assert_eq!(read, value, "round {round}, slot {a}.{i}");
+            }
+        }
+    }
+    assert!(steps.ran.load(Ordering::SeqCst) > 0, "a marking ran a step");
+    Ok(())
+}
+
+#[test]
+fn compiled_writes_keep_what_a_marking_hasnt_reached() -> Result<()> {
+    // The marker never runs on its own: a marking's work is all done at its
+    // end. A large array allocated while a marking runs is black, never
+    // scanned, and its initial elements take no SATB (they held nothing):
+    // an old `$s` made its elements, then cleared from a slot the marker
+    // hasn't reached, is held by the clearing's SATB alone. Each allocation
+    // GCs: by turns a scavenge, and a marking's start or end, so the rounds'
+    // extra allocations put the clearing at each point of the cycle.
+    let steps = Arc::new(Stepping::default());
+    let engine = engine_with(
+        &mut Config::new(),
+        stressed(),
+        Arc::new(Steps(steps.clone())),
+    )?;
+    let mut store = Store::new(&engine, ());
+    let wasm = Wasm::new(&mut store)?;
+    let from = wasm.owned_array(&mut store, 1)?;
+    for round in 0..16_i64 {
+        wasm.write(&mut store, &from, |w, scope, o| {
+            w.array_set.call(scope, (o, 0, round))
+        })?;
+        // The `$s` old, and the cycle started afresh.
+        store.gc(None)?;
+        for _ in 0..round % 4 {
+            wasm.owned_array(&mut store, 1)?;
+        }
+        let to = {
+            let mut scope = RootScope::new(&mut store);
+            let o = Some(from.to_rooted(&mut scope));
+            let to = wasm.spread.call(&mut scope, (o, 0, 1 << 16))?.unwrap();
+            to.to_owned_rooted(&mut scope)?
+        };
+        // The marking, if one runs, ends.
+        for _ in 0..4 {
+            wasm.owned_array(&mut store, 1)?;
+        }
+        assert_eq!(
+            wasm.value_of(&mut store, &to, Some(0))?,
+            round,
+            "round {round}"
+        );
+    }
+    assert_eq!(steps.ran.load(Ordering::SeqCst), 0, "the marker never ran");
+    Ok(())
+}
+
+#[test]
+fn an_exception_of_a_v128_is_thrown_and_caught() -> Result<()> {
+    // Its layout's align is elise's 8, the `v128` 16-aligned in the data.
+    let mut config = Config::new();
+    config.wasm_exceptions(true);
+    let mut store = Store::new(&engine(&mut config)?, ());
+    let module = Module::new(
+        store.engine(),
+        r#"(module
+            (tag $t (param v128))
+            (func (export "throw_and_catch") (param $v i64) (result i64)
+                (block $caught (result v128)
+                    (try_table (catch $t $caught)
+                        (throw $t (i64x2.splat (local.get $v))))
+                    unreachable)
+                (i64x2.extract_lane 1)))"#,
+    )?;
+    let instance = Instance::new(&mut store, &module, &[])?;
+    let throw_and_catch = instance.get_typed_func::<i64, i64>(&mut store, "throw_and_catch")?;
+    assert_eq!(throw_and_catch.call(&mut store, 7)?, 7);
+    Ok(())
+}
+
+#[test]
+fn compiled_code_allocates_an_array_of_its_length() -> Result<()> {
+    // Over 64 MiB of `v128`s: taken for bytes, the length would make the
+    // array over elise's largest object, 1 GiB.
+    let mut store = store()?;
+    let module = Module::new(
+        store.engine(),
+        r#"(module
+            (type $v (array (mut v128)))
+            (func (export "length") (param $len i32) (result i32)
+                (array.len (array.new_default $v (local.get $len)))))"#,
+    )?;
+    let instance = Instance::new(&mut store, &module, &[])?;
+    let length = instance.get_typed_func::<i32, i32>(&mut store, "length")?;
+    let len = (1 << 22) + 1;
+    assert_eq!(length.call(&mut store, len)?, len);
     Ok(())
 }

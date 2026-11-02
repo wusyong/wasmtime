@@ -700,7 +700,28 @@ pub fn wast_test(u: &mut arbitrary::Unstructured<'_>) -> arbitrary::Result<()> {
 ///
 /// Returns the number of `gc` operations which occurred throughout the test
 /// case -- used to test below that gc happens reasonably soon and eventually.
-pub fn gc_ops(mut fuzz_config: generators::Config, mut ops: GcOps) -> Result<usize> {
+pub fn gc_ops(fuzz_config: generators::Config, ops: GcOps) -> Result<usize> {
+    gc_ops_outcome(fuzz_config, ops).map(|(gcs, _)| gcs)
+}
+
+/// kun: how a `gc_ops` test case ended, which two collectors' runs of it
+/// agree on unless one ran out of memory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GcOpsOutcome {
+    /// The module didn't compile.
+    NotCompiled,
+    /// The GC heap ran out of memory.
+    OutOfMemory,
+    /// `run` trapped with this.
+    Trap(Trap),
+}
+
+/// kun: `gc_ops`, telling how the test case ended too.
+pub fn gc_ops_outcome(
+    mut fuzz_config: generators::Config,
+    mut ops: GcOps,
+) -> Result<(usize, GcOpsOutcome)> {
+    let outcome;
     let expected_drops = Arc::new(AtomicUsize::new(0));
     let num_dropped = Arc::new(AtomicUsize::new(0));
 
@@ -714,7 +735,7 @@ pub fn gc_ops(mut fuzz_config: generators::Config, mut ops: GcOps) -> Result<usi
         log_wasm(&wasm);
         let module = match compile_module(store.engine(), &wasm, KnownValid::No, &fuzz_config) {
             Some(m) => m,
-            None => return Ok(0),
+            None => return Ok((0, GcOpsOutcome::NotCompiled)),
         };
 
         let mut linker = Linker::new(store.engine());
@@ -960,6 +981,7 @@ pub fn gc_ops(mut fuzz_config: generators::Config, mut ops: GcOps) -> Result<usi
             let err = run.call(&mut scope, &args, &mut []).unwrap_err();
             if err.is::<GcHeapOutOfMemory<CountDrops>>() || err.is::<GcHeapOutOfMemory<()>>() {
                 // Accept GC OOM as an allowed outcome for this fuzzer.
+                outcome = GcOpsOutcome::OutOfMemory;
             } else {
                 let trap = err
                     .downcast::<Trap>()
@@ -971,6 +993,7 @@ pub fn gc_ops(mut fuzz_config: generators::Config, mut ops: GcOps) -> Result<usi
                     | Trap::AllocationTooLarge => {}
                     _ => panic!("unexpected trap: {trap}"),
                 }
+                outcome = GcOpsOutcome::Trap(trap);
             }
         }
 
@@ -979,7 +1002,7 @@ pub fn gc_ops(mut fuzz_config: generators::Config, mut ops: GcOps) -> Result<usi
     }
 
     assert_eq!(num_dropped.load(SeqCst), expected_drops.load(SeqCst));
-    return Ok(num_gcs.load(SeqCst));
+    return Ok((num_gcs.load(SeqCst), outcome));
 
     struct CountDrops(Arc<AtomicUsize>);
 
@@ -1297,6 +1320,97 @@ mod tests {
     use super::*;
     use crate::test::{gen_until_pass, test_n_times};
     use wasmparser::{Validator, WasmFeatures};
+
+    /// kun: `gc_ops`'s test cases from fixed seeds, the configs' collector
+    /// elise: `(seed, config, ops)`.
+    #[cfg(feature = "gc-elise")]
+    fn elise_gc_ops_cases(stress: bool) -> impl Iterator<Item = (u64, generators::Config, GcOps)> {
+        use rand::prelude::*;
+        (0..ELISE_GC_OPS_SEEDS).filter_map(move |seed| {
+            let mut buf = vec![0; 2048];
+            SmallRng::seed_from_u64(seed).fill_bytes(&mut buf);
+            let (mut config, ops): (generators::Config, GcOps) =
+                arbitrary::Unstructured::new(&buf).arbitrary().ok()?;
+            // Most configs leave the proposals the case's module needs off,
+            // or give the pooling allocator fewer tables than it has.
+            let module = &mut config.module_config;
+            module.config.gc_enabled = true;
+            module.config.reference_types_enabled = true;
+            module.config.multi_value_enabled = true;
+            module.config.simd_enabled = true;
+            module.function_references_enabled = true;
+            config.wasmtime.strategy = generators::InstanceAllocationStrategy::OnDemand;
+            // Pulley as often as Cranelift natively.
+            config.wasmtime.compiler_strategy = if seed % 2 == 0 {
+                CompilerStrategy::CraneliftNative
+            } else {
+                CompilerStrategy::CraneliftPulley
+            };
+            config.wasmtime.use_elise(stress);
+            Some((seed, config, ops))
+        })
+    }
+
+    /// kun: how many seeds elise's `gc_ops` tests take.
+    #[cfg(feature = "gc-elise")]
+    const ELISE_GC_OPS_SEEDS: u64 = 200;
+
+    // kun: elise passes `gc_ops`'s checks (each externref's host data given
+    // back, the traps it allows, elise's own heap checks after each GC) for
+    // fixed seeds, GCing as usual and at every allocation.
+    #[test]
+    #[cfg(feature = "gc-elise")]
+    fn gc_ops_with_elise() {
+        if std::env::var("WASMTIME_TEST_NO_HOG_MEMORY").is_ok() {
+            return;
+        }
+        for stress in [false, true] {
+            let (mut ran, mut gcs) = (0, 0);
+            for (seed, config, ops) in elise_gc_ops_cases(stress) {
+                let (n, outcome) = gc_ops_outcome(config, ops)
+                    .unwrap_or_else(|e| panic!("seed {seed}, stress {stress}: {e:?}"));
+                ran += usize::from(outcome != GcOpsOutcome::NotCompiled);
+                gcs += n;
+            }
+            // Not vacuous: most cases run, and some GC.
+            assert!(
+                ran > ELISE_GC_OPS_SEEDS as usize / 2,
+                "only {ran} cases ran"
+            );
+            assert!(gcs > 0, "no case GCed");
+        }
+    }
+
+    // kun: the copying collector's runs of the same cases end the same way,
+    // unless one of them ran out of memory, with as many GCs.
+    #[test]
+    #[cfg(feature = "gc-elise")]
+    fn gc_ops_elise_agrees_with_copying() {
+        if std::env::var("WASMTIME_TEST_NO_HOG_MEMORY").is_ok() {
+            return;
+        }
+        let mut compared = 0;
+        for (seed, config, ops) in elise_gc_ops_cases(true) {
+            let mut copying = config.clone();
+            copying.wasmtime.use_copying();
+            let elise = gc_ops_outcome(config, ops.clone()).unwrap();
+            // Its heap may be too small for the case's externref arguments.
+            let copying = match gc_ops_outcome(copying, ops) {
+                Err(e) if format!("{e}").starts_with("GC heap out of memory") => continue,
+                result => result.unwrap(),
+            };
+            let oom = |o: &(usize, GcOpsOutcome)| o.1 == GcOpsOutcome::OutOfMemory;
+            if oom(&elise) || oom(&copying) || elise.1 == GcOpsOutcome::NotCompiled {
+                continue;
+            }
+            assert_eq!(elise, copying, "seed {seed}");
+            compared += 1;
+        }
+        assert!(
+            compared > ELISE_GC_OPS_SEEDS as usize / 2,
+            "only {compared} compared"
+        );
+    }
 
     // Test that the `gc_ops` fuzzer eventually runs the gc function in the host.
     // We've historically had issues where this fuzzer accidentally wasn't fuzzing

@@ -20,6 +20,8 @@ pub fn apply_wast_config(config: &mut Config, wast_config: &wast::WastConfig) {
         Collector::Null => wasmtime::Collector::Null,
         Collector::DeferredReferenceCounting => wasmtime::Collector::DeferredReferenceCounting,
         Collector::Copying => wasmtime::Collector::Copying,
+        // kun: elise, kun's GC.
+        Collector::Elise => wasmtime::Collector::Elise,
     });
 }
 

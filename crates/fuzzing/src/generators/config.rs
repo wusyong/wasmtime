@@ -287,6 +287,9 @@ impl Config {
                     wasmtime_test_util::wast::Collector::DeferredReferenceCounting
                 }
                 Collector::Copying => wasmtime_test_util::wast::Collector::Copying,
+                // kun: elise, kun's GC.
+                #[cfg(feature = "gc-elise")]
+                Collector::Elise => wasmtime_test_util::wast::Collector::Elise,
             },
             pooling: matches!(
                 self.wasmtime.strategy,
@@ -463,6 +466,20 @@ impl Config {
         log::debug!("creating wasmtime config with CLI options:\n{cfg}");
         let mut cfg = cfg.config(None).expect("failed to create wasmtime::Config");
 
+        // kun: elise checks its heap after each GC and, stressed, GCs at
+        // every allocation too.
+        #[cfg(feature = "gc-elise")]
+        if self.wasmtime.collector == Collector::Elise {
+            cfg.elise_heap(
+                wasmtime::elise::HeapOptions {
+                    verify: true,
+                    stress: self.wasmtime.elise_stress,
+                    ..Default::default()
+                },
+                std::sync::Arc::new(wasmtime::elise::InlinePlatform),
+            );
+        }
+
         if self.wasmtime.async_config != AsyncConfig::Disabled {
             log::debug!("async config in use {:?}", self.wasmtime.async_config);
             self.wasmtime.async_config.configure(&mut cfg);
@@ -629,6 +646,9 @@ pub struct WasmtimeConfig {
     /// Configuration for the compiler to use.
     pub compiler_strategy: CompilerStrategy,
     collector: Collector,
+    /// kun: whether elise, if it's the collector, GCs at every allocation.
+    #[cfg(feature = "gc-elise")]
+    elise_stress: bool,
     gc_zeal_alloc_counter: Option<NonZeroU32>,
     table_lazy_init: bool,
     metadata_for_internal_asserts: bool,
@@ -648,6 +668,20 @@ pub struct WasmtimeConfig {
 }
 
 impl WasmtimeConfig {
+    /// kun: elise as the collector, GCing at every allocation if `stress`.
+    #[cfg(feature = "gc-elise")]
+    pub fn use_elise(&mut self, stress: bool) {
+        self.collector = Collector::Elise;
+        self.elise_stress = stress;
+        self.make_internally_consistent();
+    }
+
+    /// kun: the copying collector, what elise's results are compared with.
+    pub fn use_copying(&mut self) {
+        self.collector = Collector::Copying;
+        self.make_internally_consistent();
+    }
+
     /// Force `self` to be a configuration compatible with `other`. This is
     /// useful for differential execution to avoid unhelpful fuzz crashes when
     /// one engine has a feature enabled and the other does not.
@@ -835,6 +869,12 @@ impl WasmtimeConfig {
     /// these sorts of configurations. For now though it's intended to reflect
     /// the current state of the engine's development.
     pub(crate) fn make_internally_consistent(&mut self) {
+        // kun: Winch refuses elise.
+        #[cfg(feature = "gc-elise")]
+        if self.collector == Collector::Elise && self.compiler_strategy == CompilerStrategy::Winch {
+            self.compiler_strategy = CompilerStrategy::CraneliftNative;
+        }
+
         if !self.signals_based_traps {
             // Spectre-based heap mitigations require signal handlers so
             // this must always be disabled if signals-based traps are
@@ -1034,6 +1074,9 @@ pub enum Collector {
     DeferredReferenceCounting,
     Null,
     Copying,
+    /// kun: elise, kun's GC.
+    #[cfg(feature = "gc-elise")]
+    Elise,
 }
 
 impl Collector {
@@ -1042,6 +1085,8 @@ impl Collector {
             Collector::DeferredReferenceCounting => wasmtime::Collector::DeferredReferenceCounting,
             Collector::Null => wasmtime::Collector::Null,
             Collector::Copying => wasmtime::Collector::Copying,
+            #[cfg(feature = "gc-elise")]
+            Collector::Elise => wasmtime::Collector::Elise,
         }
     }
 }

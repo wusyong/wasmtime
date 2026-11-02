@@ -12,6 +12,8 @@ fn main() {
     faux_feature("gc-copying");
     faux_feature("gc-null");
     faux_feature("gc-drc");
+    // kun: elise's libcalls.
+    faux_feature("gc-elise");
     faux_feature("threads");
     faux_feature("wmemcheck");
     faux_feature("component-model");

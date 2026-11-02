@@ -4,12 +4,14 @@
 The tests the `gc_engine()` helper's engine runs (`tests/all/main.rs`) take
 elise as their collector with `WASMTIME_TEST_COLLECTOR=elise`, which checks
 the heap after every GC, and `elise-stress`, which GCs at every allocation
-too. Those elise can't pass yet are listed in
-`kun/elise-expected-failures.txt`, each with why; this runs the modules
-both ways, and fails if a test outside the list fails, or one on it passes
-(take it off the list).
+too. So do the spec tests of GC types (`tests/wast.rs`, which needs the
+`tests/spec_testsuite` and `tests/component-model` submodules), compiled by
+Cranelift natively and for Pulley. Those elise can't pass yet are listed in
+`kun/elise-expected-failures.txt`, each with why; this runs the modules and
+the spec tests both ways, and fails if a test outside the list fails, or one
+on it passes (take it off the list).
 
-    python3 kun/elise_tests.py [extra cargo test filters...]
+    python3 kun/elise_tests.py [extra filters for `tests/all`...]
 """
 
 import os
@@ -22,7 +24,8 @@ ROOT = Path(__file__).resolve().parent.parent
 LIST = ROOT / 'kun' / 'elise-expected-failures.txt'
 # The modules whose tests use `gc_engine()` or `gc_store()`.
 MODULES = ['structs::', 'arrays::', 'gc::', 'exnrefs::', 'eqref::']
-RESULT = re.compile(r'^test (\S+)(?: - should panic)? \.\.\. (ok|FAILED|ignored)', re.M)
+# libtest-mimic pads the names.
+RESULT = re.compile(r'^test (\S+)(?: - should panic)? +\.\.\. (ok|FAILED|ignored)', re.M)
 
 
 def expected():
@@ -36,15 +39,19 @@ def expected():
     return names
 
 
-def run(collector, filters):
-    """Whether the run with `collector` failed."""
+def run(collector, target, filters):
+    """Whether the run of `target` with `collector` failed."""
     env = dict(os.environ, WASMTIME_TEST_COLLECTOR=collector)
-    command = ['cargo', 'test', '--features', 'gc-elise', '--test', 'all', '--', *filters]
+    command = ['cargo', 'test', '--features', 'gc-elise', '--test', target, '--', *filters]
     run = subprocess.run(command, cwd=ROOT, env=env, capture_output=True, text=True,
                          encoding='utf-8', errors='replace')
     output = run.stdout + run.stderr
     results = dict(RESULT.findall(output))
     if not results:
+        if 'git submodule update' in output:
+            print('the spec tests need `git submodule update --init tests/spec_testsuite '
+                  'tests/component-model`')
+            return True
         print(output)
         print('no test ran (did the binary crash?)')
         return True
@@ -53,7 +60,7 @@ def run(collector, filters):
     fixed = sorted(n for n, r in results.items() if r == 'ok' and n in listed)
     failed = sum(r == 'FAILED' for r in results.values())
     passed = sum(r == 'ok' for r in results.values())
-    print(f'{collector}: {passed} passed, {failed} failed ({failed - len(unexpected)} expected)')
+    print(f'{target}, {collector}: {passed} passed, {failed} failed ({failed - len(unexpected)} expected)')
     for name in unexpected:
         print(f'unexpected failure: {name}')
     for name in fixed:
@@ -69,7 +76,9 @@ def main():
     filters = sys.argv[1:] or MODULES
     failed = False
     for collector in ['elise', 'elise-stress']:
-        failed |= run(collector, filters)
+        failed |= run(collector, 'all', filters)
+        # libtest-mimic prints a line a test only so.
+        failed |= run(collector, 'wast', ['--format', 'pretty'])
     sys.exit(1 if failed else 0)
 
 

@@ -156,6 +156,24 @@ pub trait GcCompiler {
         flags: ir::MemFlagsData,
     ) -> WasmResult<()>;
 
+    /// kun: [`Self::translate_write_gc_reference`] for a GC object's field:
+    /// `dst` is in the GC heap. A collector that records which objects
+    /// point where (a generational one) has barriers there, and none on a
+    /// root's (a table's, a global's), which the other is used for.
+    ///
+    /// Defaults to `translate_write_gc_reference`.
+    fn translate_write_gc_field(
+        &mut self,
+        func_env: &mut FuncEnvironment<'_>,
+        builder: &mut FunctionBuilder,
+        ty: WasmRefType,
+        dst: ir::Value,
+        new_val: ir::Value,
+        flags: ir::MemFlagsData,
+    ) -> WasmResult<()> {
+        self.translate_write_gc_reference(func_env, builder, ty, dst, new_val, flags)
+    }
+
     /// Same as [`Self::translate_write_gc_reference`] except that the
     /// destination address has not been previously initialized.
     ///
@@ -187,6 +205,8 @@ pub trait GcCompiler {
 
 mod copying;
 mod drc;
+// kun: elise, kun's GC.
+mod elise;
 mod null;
 
 /// Get the default GC compiler.
@@ -202,11 +222,8 @@ pub fn gc_compiler(func_env: &mut FuncEnvironment<'_>) -> WasmResult<Box<dyn GcC
 
         Some(Collector::Copying) => Ok(Box::new(copying::CopyingCompiler::default())),
 
-        // kun: elise has no compiler yet; only the host's API reaches its
-        // objects.
-        Some(Collector::Elise) => Err(wasm_unsupported!(
-            "the elise collector doesn't compile GC instructions yet"
-        )),
+        // kun: elise, kun's GC.
+        Some(Collector::Elise) => Ok(Box::new(elise::EliseCompiler::default())),
 
         None => Err(wasm_unsupported!(
             "support for GC types disabled at configuration time"
@@ -578,8 +595,9 @@ pub fn write_field_at_addr(
             WasmHeapTopType::Func => {
                 write_func_ref_at_addr(func_env, builder, r, flags, field_addr, new_val)?
             }
+            // kun: a field's, told from a root's.
             WasmHeapTopType::Extern | WasmHeapTopType::Any | WasmHeapTopType::Exn => {
-                gc_compiler(func_env)?.translate_write_gc_reference(
+                gc_compiler(func_env)?.translate_write_gc_field(
                     func_env, builder, r, field_addr, new_val, flags,
                 )?;
             }

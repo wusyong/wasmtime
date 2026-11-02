@@ -23,8 +23,10 @@
 //! of elise's: after a GC, those whose object died give their host data
 //! back.
 //!
-//! It doesn't compile GC instructions yet: only the host's API reaches its
-//! objects.
+//! Compiled code reaches the heap through elise's barrier state
+//! (`vmctx_gc_heap_data`): its write barriers read it inline, and call
+//! `elise_satb` and `elise_remember` when they must
+//! (`crates/cranelift/src/func_environ/gc/elise.rs`).
 
 use super::*;
 use crate::{
@@ -32,8 +34,7 @@ use crate::{
     prelude::*,
     vm::{
         ExternRefHostDataId, GarbageCollection, GcHeap, GcProgress, GcRoot, GcRootsIter, GcRuntime,
-        GcStoreTraceState, SendSyncUnsafeCell, VMGcHeader, VMGcObjectData, VMGcRef,
-        VMMemoryDefinition,
+        GcStoreTraceState, VMGcHeader, VMGcObjectData, VMGcRef, VMMemoryDefinition,
     },
 };
 use ::elise::raw::{
@@ -46,10 +47,23 @@ use core::sync::atomic::AtomicUsize;
 use core::{alloc::Layout, any::Any, mem, slice};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
-use wasmtime_environ::elise::{ARRAY_LENGTH_OFFSET, EliseTypeLayouts};
+use wasmtime_environ::elise::{
+    ARRAY_LENGTH_OFFSET, BARRIER_YOUNG_PAGES_OFFSET, EliseTypeLayouts, PAGE_SHIFT,
+    barrier_marking_offset,
+};
 use wasmtime_environ::{
     GcArrayLayout, GcLayout, GcStructLayout, GcTypeLayouts, VMGcKind, VMSharedTypeIndex,
 };
+
+// Compiled code reads elise's barrier state where `wasmtime_environ::elise`
+// says it is (no dependency on elise there).
+#[expect(clippy::cast_possible_truncation, reason = "a pointer's size, 4 or 8")]
+const _: () = assert!(
+    ::elise::raw::BarrierState::YOUNG_PAGES == BARRIER_YOUNG_PAGES_OFFSET as usize
+        && ::elise::raw::BarrierState::MARKING
+            == barrier_marking_offset(mem::size_of::<usize>() as u8) as usize
+        && ::elise::raw::PAGE_SHIFT == PAGE_SHIFT
+);
 
 /// How many ids a range of elise's type table holds: an engine reserves
 /// ranges as its types need them, so that many engines (each test's) share
@@ -201,7 +215,6 @@ unsafe impl GcRuntime for EliseCollector {
             options: self.options,
             platform: self.platform.clone(),
             no_gc_count: 0,
-            vmctx_data: SendSyncUnsafeCell::new(0),
         }) as _)
     }
 
@@ -251,6 +264,30 @@ impl Drop for EliseCollector {
     }
 }
 
+/// `elise_satb`: `old` is the old value of a reference field compiled code
+/// overwrites, as a marking runs.
+pub fn elise_satb(heap: &mut dyn GcHeap, old: u32) -> Result<()> {
+    let Some(heap) = heap.as_any_mut().downcast_mut::<EliseHeap>() else {
+        bail_bug!("elise's libcall on another collector's heap");
+    };
+    // SAFETY: a field's value, read in the heap, which holds the bits of
+    // live objects only (elise's heap trusts compiled code, as its GC does).
+    unsafe { heap.heap_mut().satb(old) };
+    Ok(())
+}
+
+/// `elise_remember`: compiled code wrote `value` at `slot`, the offset of a
+/// field of an object.
+pub fn elise_remember(heap: &mut dyn GcHeap, slot: u32, value: u32) -> Result<()> {
+    let Some(heap) = heap.as_any_mut().downcast_mut::<EliseHeap>() else {
+        bail_bug!("elise's libcall on another collector's heap");
+    };
+    // SAFETY: as `elise_satb`: compiled code gives a live object's field's
+    // offset, and what it just wrote there.
+    unsafe { heap.heap_mut().remember(slot, value) };
+    Ok(())
+}
+
 /// A GC heap of elise's: an `EngineHeap` while it is attached.
 struct EliseHeap {
     /// Dropped as it is detached: a pooling allocator gives the next store
@@ -268,9 +305,6 @@ struct EliseHeap {
     options: HeapOptions,
     platform: Arc<dyn Platform>,
     no_gc_count: usize,
-    /// What compiled Wasm would reach through `vmctx_gc_heap_data`: nothing
-    /// yet.
-    vmctx_data: SendSyncUnsafeCell<u64>,
 }
 
 impl EliseHeap {
@@ -577,10 +611,11 @@ unsafe impl GcHeap for EliseHeap {
         })
     }
 
+    /// elise's barrier state, which stays where it is while the heap is
+    /// attached: compiled code runs only then, its store's instances
+    /// having the attached heap's.
     unsafe fn vmctx_gc_heap_data(&self) -> NonNull<u8> {
-        // SAFETY: only a pointer: nothing reads or writes it yet.
-        let data = unsafe { self.vmctx_data.get() };
-        NonNull::new(data).unwrap().cast()
+        self.heap().barrier_state().cast()
     }
 
     fn take_memory(&mut self) -> crate::vm::Memory {

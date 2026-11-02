@@ -76,7 +76,9 @@ macro_rules! foreach_builtin_function {
 
             // Allocate a new, uninitialized GC object and return a reference to
             // it.
-            #[cfg(any(feature = "gc-drc", feature = "gc-copying"))]
+            //
+            // kun: elise's too.
+            #[cfg(any(feature = "gc-drc", feature = "gc-copying", feature = "gc-elise"))]
             gc_alloc_raw(
                 vmctx: vmctx,
                 kind: u32,
@@ -84,6 +86,18 @@ macro_rules! foreach_builtin_function {
                 size: u32,
                 align: u32
             ) -> u32;
+
+            // kun: elise's write barrier's slow paths. `elise_satb` takes
+            // the old value of a GC object's reference field overwritten
+            // while a marking runs; `elise_remember` an old object's field
+            // just written a young object's reference (`slot`, the field's
+            // offset in the GC heap, and `value`).
+            //
+            // These libcalls may not GC.
+            #[cfg(feature = "gc-elise")]
+            elise_satb(vmctx: vmctx, old: u32) -> bool;
+            #[cfg(feature = "gc-elise")]
+            elise_remember(vmctx: vmctx, slot: u32, value: u32) -> bool;
 
             // Intern a `funcref` into the GC heap, returning its
             // `FuncRefTableId`.

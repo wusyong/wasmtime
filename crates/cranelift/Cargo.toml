@@ -41,6 +41,8 @@ features = [
   "gc-drc",
   "gc-null",
   "gc-copying",
+  # kun: elise's layouts.
+  "gc-elise",
   "stack-switching",
   "threads",
 ]
