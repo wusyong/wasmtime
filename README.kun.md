@@ -6,7 +6,7 @@
 | Fork | https://github.com/wusyong/wasmtime (remote `origin`) |
 | Branch | `kun`, from upstream's tag `v50.0.1` (`c307ec81de`); the fork's `main` is upstream's, untouched |
 | License | Apache-2.0 WITH LLVM-exception (`LICENSE`) |
-| Used by | kun's `dom_wasm` (by path, version pinned), with `gc-elise` on and the default collector: kun doesn't choose elise yet. Elise is beside it (`../elise`, by path), the one kun builds too |
+| Used by | kun's `dom_wasm` (by path, version pinned), with `gc-elise` on: its stores borrow the DOM's heap (`Config::elise_heap_provider`, a `StoreSet`'s). Elise is beside it (`../elise`, by path), the one kun builds too |
 
 ## Why a fork
 
@@ -91,7 +91,9 @@ code for memory safety:
   wasm frames, or the embedder's `&mut` to it, may be on the stack): that
   GC doesn't run, as inside frames. The store whose GC runs gives its own
   roots, as wasmtime does. A store with a provider outside a set gets no
-  GC heap (attaching it fails).
+  GC heap (attaching it fails). A store of a set with no GC heap (it never
+  allocated a GC object) asking for a GC (`Store::gc`) runs the heap's,
+  giving none of its roots, as it has none (`elise_gc_without_heap`).
 - While the set lends a store (`StoreSet::with`, a `StoreContextMut`), it
   counts the heap's frames (`Heap::enter_frames`): the embedder's
   safepoints then run no GC that reads the roots, which they can't see on
@@ -198,7 +200,7 @@ Each is marked with a `kun:` comment.
     `src/runtime.rs`: `StoreSet`, a store's place in it
     (`StoreOpaque::elise_slot`); `src/runtime/store/gc.rs`: a GC heap bound
     to the set's heap as it is allocated, a store's roots for the set
-    (`elise_trace_roots`).
+    (`elise_trace_roots`), a set's store's GC with no GC heap (`do_gc`).
   - `src/runtime/func.rs` (`invoke_wasm_and_catch_traps`),
     `src/runtime/fiber.rs` (`resume_fiber`): `GcHeap::check_thread`.
   - `src/runtime/vm/gc/gc_runtime.rs`: `GcRuntime::register_type` and

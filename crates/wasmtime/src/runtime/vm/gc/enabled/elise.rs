@@ -634,6 +634,25 @@ pub fn elise_bind(heap: &mut dyn GcHeap, slot: Option<&EliseSlot>) -> Result<()>
     }
 }
 
+/// The GC of a `StoreSet`'s heap that a store with no GC heap asks for
+/// (`Store::gc`): what the heap is due to do, else a full GC, given none of
+/// the store's roots (it has no GC reference), the other stores' from the
+/// set's source.
+pub fn elise_gc_without_heap(slot: &EliseSlot) -> Result<()> {
+    let shared = &slot.shared;
+    shared.gcing.store(slot.index, Ordering::Relaxed);
+    // SAFETY: none of the store's roots: it has none.
+    let collected = shared.with_heap(|heap| unsafe {
+        if heap.should_collect() {
+            heap.safepoint_with_roots(|_| {});
+        } else {
+            heap.collect_with_roots(|_| {});
+        }
+    });
+    shared.gcing.store(usize::MAX, Ordering::Relaxed);
+    collected
+}
+
 impl EliseHeap {
     /// The cage's start, the heap checked first (a borrowed one's thread,
     /// and that it lives).

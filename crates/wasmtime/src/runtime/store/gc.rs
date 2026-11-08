@@ -662,6 +662,13 @@ impl StoreOpaque {
     async fn do_gc(&mut self, asyncness: Asyncness) -> Result<()> {
         // If the GC heap hasn't been initialized, there is nothing to collect.
         if self.gc_store.is_none() {
+            // kun: but a `StoreSet`'s store borrows the set's heap, the
+            // embedder's objects' too: its GC runs, given none of this
+            // store's roots (it has no GC reference without a GC heap).
+            #[cfg(feature = "gc-elise")]
+            if let Some(slot) = &self.elise_slot {
+                vm::elise_gc_without_heap(slot)?;
+            }
             return Ok(());
         }
 

@@ -2,7 +2,8 @@
 //! (`Config::elise_heap_provider`), a `StoreSet`'s. The embedder's
 //! safepoints' GCs and each store's keep every store's objects (their
 //! globals'), moved; none that reads the roots runs while another store is
-//! lent, nor the embedder's while any is; a store outside a set gets no GC
+//! lent, nor the embedder's while any is; a store with no GC heap runs the
+//! set's heap's; a store outside a set gets no GC
 //! heap, one off the heap's thread or after the heap is replaced fails, and
 //! a heap takes one set's source only.
 
@@ -246,6 +247,25 @@ fn the_embedders_safepoints_run_no_gc_while_a_store_is_lent() -> Result<()> {
     }));
     assert!(unwound.is_err());
     assert!(!dom(|heap| heap.in_frames()));
+    drop(set);
+    DOM.set(None);
+    Ok(())
+}
+
+#[test]
+fn a_store_with_no_gc_heap_gcs_the_sets_heap() -> Result<()> {
+    lend(10);
+    let mut set = set()?;
+    let (a, a_instance) = store(&mut set, 1)?;
+    let engine = engine_of(&set)?;
+    let plain = set.insert(Store::new(&engine, ()))?;
+    let gcs = dom(|heap| heap.stats()).gcs;
+    set.with(plain, |mut cx| cx.gc(None))??;
+    assert_eq!(dom(|heap| heap.stats()).gcs, gcs + 1, "a full GC, none due");
+    assert_eq!(global(&set, a, a_instance)?, 1);
+    // Another store lent, none.
+    set.with(a, |_| set.with(plain, |mut cx| cx.gc(None)))???;
+    assert_eq!(dom(|heap| heap.stats()).gcs, gcs + 1);
     drop(set);
     DOM.set(None);
     Ok(())
