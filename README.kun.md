@@ -100,6 +100,35 @@ The compiler is `crates/cranelift/src/func_environ/gc/elise.rs`.
   through `write_field_at_addr` takes no barrier with elise, which loses
   objects silently.
 
+## Writes alongside elise's marker
+
+Elise's concurrent marking reads an object's GC references (and an array's
+length) atomically on its workers, while the runtime reads and writes the
+object on the store's thread. So no `&mut` may cover an object's bytes:
+
+- `VMGcObjectData`'s bytes are cells (`UnsafeCell<u8>`), read and written
+  through a shared reference with raw pointers, as V8's `TaggedField`
+  reads and writes a heap's fields; nothing hands out a `&mut
+  VMGcObjectData`, or a `&[u8]` of an object (`copy_to_slice` copies out).
+  A `GcStore` still lends it borrowed mutably, and it isn't `Sync`: one
+  writer at a time, the store's.
+- A GC reference field is written only through `write_gc_ref_in` and
+  `init_gc_ref_in` (the runtime's) or `GcCompiler` (compiled code's), which
+  elise does atomically with its barriers (`raw::EngineHeap::write_bits`);
+  the runtime's other writes are of other bytes (numbers, a funcref's id in
+  the func-ref table, an `i8` array's elements), which the marker doesn't
+  read. `header_mut`'s `&mut VMGcHeader` covers the header, which the
+  marker doesn't read either.
+- Compiled code's plain stores are outside Rust's memory model: an aligned
+  32-bit store is one write on x86-64 and ARM64, so the marker's relaxed
+  atomic read finds the old value or the new one, and the barrier keeps
+  what the old one referred to.
+
+**On every rebase, look for new runtime writes of a GC object**: one that
+writes a GC reference field other than through `write_gc_ref_in` and
+`init_gc_ref_in`, or makes a `&mut` (or `&[u8]`) of an object's bytes,
+races with elise's marker.
+
 ## Local modifications
 
 Each is marked with a `kun:` comment.
@@ -127,7 +156,15 @@ Each is marked with a `kun:` comment.
   - `src/runtime/vm/gc/gc_runtime.rs`: `GcRuntime::register_type` and
     `unregister_type`; `GcHeap::write_gc_ref_in`, `init_gc_ref_in` (a
     barrier given the object, which a generational collector needs) and
-    `capacity`. All have defaults the other collectors keep.
+    `capacity`. All have defaults the other collectors keep. No
+    `gc_object_data_mut`: `gc_object_data`'s default makes the object's
+    cells from the memory's base pointer, not from `heap_slice`.
+  - `src/runtime/vm/gc/data.rs`: `VMGcObjectData`'s bytes are cells, its
+    methods take `&self`, `copy_to_slice` in place of `slice`
+    ("Writes alongside elise's marker").
+  - `src/runtime/vm/gc.rs`: `GcStore::gc_object_data` gives a shared
+    `VMGcObjectData`; `src/runtime/gc/enabled/arrayref.rs`:
+    `copy_to_i8_slice` copies out with `copy_to_slice`.
   - `src/runtime/vm/gc/gc_ref.rs`: `write_val` and `initialize_val` write
     an object's GC references through `write_gc_ref_in` and
     `init_gc_ref_in`.
@@ -157,6 +194,9 @@ Each is marked with a `kun:` comment.
 
 ```sh
 cargo test --features gc-elise --test all elise::               # elise's own
+MIRIFLAGS="-Zmiri-disable-isolation -Zmiri-permissive-provenance" \
+  cargo +nightly miri test --features gc-elise --test all -- elise::a_marking_on_workers
+                                                                 # its marker beside the host's writes, under Miri
 cargo test -p wasmtime --features gc-elise --lib elise::        # its type table
 python3 kun/elise_tests.py                                      # upstream's GC tests, with elise
 cargo test -p wasmtime-fuzzing --no-default-features --features gc-elise --lib -- \

@@ -366,8 +366,11 @@ impl GcStore {
     /// Get the data for the given object reference.
     ///
     /// Panics when the structref and its size is out of the GC heap bounds.
-    pub fn gc_object_data(&mut self, gc_ref: &VMGcRef) -> Result<&mut VMGcObjectData> {
-        self.gc_heap.gc_object_data_mut(gc_ref)
+    ///
+    /// kun: shared (its bytes are cells, written through it too), and still
+    /// taking `&mut self`: one writer at a time, the store's.
+    pub fn gc_object_data(&mut self, gc_ref: &VMGcRef) -> Result<&VMGcObjectData> {
+        self.gc_heap.gc_object_data(gc_ref)
     }
 
     /// Allocate an uninitialized array with the given type index.

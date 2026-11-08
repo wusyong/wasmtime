@@ -679,6 +679,143 @@ fn a_marking_steps_between_the_hosts_writes() -> Result<()> {
     Ok(())
 }
 
+/// A marking on a pool's workers (elise's `ThreadPool`) runs alongside the
+/// host's writes: the runtime writes a struct's fields (its numbers, through
+/// `VMGcObjectData`'s cells; its GC references, through elise's atomic
+/// writes) while the marker reads its GC references on another thread. Under
+/// Miri, which reports a data race or a `&mut` covering what the marker
+/// reads, fewer rounds.
+/// A pool's workers (elise's `ThreadPool`), counting the posted jobs' runs
+/// on other threads than the test's.
+struct Workers {
+    pool: wasmtime::elise::ThreadPool,
+    test: std::thread::ThreadId,
+    ran: Arc<AtomicUsize>,
+}
+
+/// A posted job, its runs on a worker counted.
+struct CountedJob {
+    job: Arc<dyn Job + Send>,
+    test: std::thread::ThreadId,
+    ran: Arc<AtomicUsize>,
+}
+
+impl Job for CountedJob {
+    fn run(&self, delegate: &dyn JobDelegate) {
+        if std::thread::current().id() != self.test {
+            self.ran.fetch_add(1, Ordering::SeqCst);
+        }
+        self.job.run(delegate);
+    }
+
+    fn max_concurrency(&self, active: usize) -> usize {
+        self.job.max_concurrency(active)
+    }
+}
+
+impl Platform for Workers {
+    fn run(&self, job: &dyn Job) {
+        self.pool.run(job);
+    }
+
+    fn post_job(&self, job: Arc<dyn Job + Send>) -> Option<Box<dyn JobHandle>> {
+        self.pool.post_job(Arc::new(CountedJob {
+            job,
+            test: self.test,
+            ran: self.ran.clone(),
+        }))
+    }
+
+    fn posts_jobs(&self) -> bool {
+        true
+    }
+}
+
+#[test]
+fn a_marking_on_workers_runs_alongside_the_hosts_writes() -> Result<()> {
+    let ran = Arc::new(AtomicUsize::new(0));
+    let engine = engine_with(
+        &mut Config::new(),
+        stressed(),
+        Arc::new(Workers {
+            pool: wasmtime::elise::ThreadPool::new(2),
+            test: std::thread::current().id(),
+            ran: ran.clone(),
+        }),
+    )?;
+    let mut store = Store::new(&engine, ());
+    let pre = StructRefPre::new(&mut store, struct_ty(&engine)?);
+    let element = FieldType::new(Mutability::Var, StorageType::ValType(ValType::ANYREF));
+    let array_pre = ArrayRefPre::new(&mut store, ArrayType::new(&engine, element));
+    let mut arrays = Vec::new();
+    for _ in 0..4 {
+        let array = ArrayRef::new(&mut store, &array_pre, &Val::null_any_ref(), 8)?;
+        arrays.push(array.to_owned_rooted(&mut store)?);
+    }
+    // What each slot holds: none, or the value of the struct in it.
+    let mut model = [[None::<i64>; 8]; 4];
+    let mut seed = 7_u64;
+    let mut random = |n: u64| {
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (seed >> 33) % n
+    };
+    let rounds = if cfg!(miri) { 30 } else { 2000 };
+    for round in 0..rounds {
+        let (a, i) = (usize::try_from(random(4))?, random(8));
+        let i_at = usize::try_from(i)?;
+        let i = u32::try_from(i)?;
+        let mut scope = RootScope::new(&mut store);
+        match (random(3), model[a][i_at]) {
+            (0, _) | (_, None) => {
+                // A new struct (each allocation GCs) into the slot.
+                let s = StructRef::new(&mut scope, &pre, &fields(round))?;
+                arrays[a].set(&mut scope, i, s.to_anyref().into())?;
+                model[a][i_at] = Some(round);
+            }
+            (1, Some(_)) => {
+                // Its numbers written while the marker may be scanning it.
+                let field = arrays[a].get(&mut scope, i)?;
+                let s = field.unwrap_anyref().unwrap().unwrap_struct(&scope)?;
+                s.set_field(&mut scope, 0, Val::I32(i32::try_from(round)?))?;
+                s.set_field(&mut scope, 1, Val::I64(-round))?;
+                let i31 = AnyRef::from_i31(&mut scope, I31::wrapping_i32(i32::try_from(round)?));
+                s.set_field(&mut scope, 2, i31.into())?;
+                model[a][i_at] = Some(-round);
+            }
+            (_, Some(_)) => {
+                // Moved to another slot, its own cleared.
+                let (b, j) = (usize::try_from(random(4))?, random(8));
+                let j_at = usize::try_from(j)?;
+                let value = arrays[a].get(&mut scope, i)?;
+                arrays[a].set(&mut scope, i, Val::null_any_ref())?;
+                arrays[b].set(&mut scope, u32::try_from(j)?, value)?;
+                let moved = model[a][i_at].take();
+                model[b][j_at] = moved;
+            }
+        }
+        drop(scope);
+        let mut scope = RootScope::new(&mut store);
+        for (a, slots) in model.iter().enumerate() {
+            for (i, &value) in slots.iter().enumerate() {
+                let field = arrays[a].get(&mut scope, u32::try_from(i)?)?;
+                let read = match field.unwrap_anyref() {
+                    Some(r) => {
+                        let s = r.unwrap_struct(&scope)?;
+                        Some(s.field(&mut scope, 1)?.unwrap_i64())
+                    }
+                    None => None,
+                };
+                assert_eq!(read, value, "round {round}, slot {a}.{i}");
+            }
+        }
+    }
+    store.gc(None)?;
+    assert!(ran.load(Ordering::SeqCst) > 0, "the marker ran on a worker");
+    Ok(())
+}
+
 /// Compiled code's reads and writes, its barriers', of `$s` and `$a`
 /// objects, and of a global's and a table's.
 const WAT: &str = r#"

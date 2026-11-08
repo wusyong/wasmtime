@@ -743,9 +743,8 @@ impl ArrayRef {
         let data = store
             .require_gc_store_mut()?
             .gc_object_data(arrayref.as_gc_ref())?;
-        let bytes = data.slice(layout.base_size, len)?;
-        dst.copy_from_slice(bytes);
-        Ok(())
+        // kun: copied out, not lent: the data is cells (`VMGcObjectData`).
+        data.copy_to_slice(layout.base_size, dst)
     }
 
     #[inline]

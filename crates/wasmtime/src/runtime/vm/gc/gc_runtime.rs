@@ -227,14 +227,14 @@ pub unsafe trait GcHeap: 'static + Send + Sync {
         offset: u32,
         source: Option<&VMGcRef>,
     ) -> Result<()> {
-        let raw = self.gc_object_data_mut(object)?.read_u32(offset)?;
+        let raw = self.gc_object_data(object)?.read_u32(offset)?;
         let mut destination = VMGcRef::from_raw_u32(raw);
         if crate::vm::GcStore::needs_write_barrier(&mut destination, source) {
             self.write_gc_ref(&mut destination, source)?;
         } else {
             destination = source.map(|s| s.copy_i31());
         }
-        self.gc_object_data_mut(object)?
+        self.gc_object_data(object)?
             .write_u32(offset, destination.map_or(0, |r| r.as_raw_u32()))
     }
 
@@ -253,7 +253,7 @@ pub unsafe trait GcHeap: 'static + Send + Sync {
             Some(s) if s.is_i31() => s.as_raw_u32(),
             Some(s) => self.clone_gc_ref(s).as_raw_u32(),
         };
-        self.gc_object_data_mut(object)?.write_u32(offset, raw)
+        self.gc_object_data(object)?.write_u32(offset, raw)
     }
 
     ////////////////////////////////////////////////////////////////////////////
@@ -599,7 +599,8 @@ pub unsafe trait GcHeap: 'static + Send + Sync {
         Ok(start..end)
     }
 
-    /// Get a mutable borrow of the given object's data.
+    /// Get the given object's data, to read and write (kun: its bytes are
+    /// cells, so no `&mut` covers the object; see `VMGcObjectData`).
     ///
     /// # Errors
     ///
@@ -607,26 +608,19 @@ pub unsafe trait GcHeap: 'static + Send + Sync {
     /// `i31ref`.
     fn gc_object_data(&self, gc_ref: &VMGcRef) -> Result<&VMGcObjectData> {
         let range = self.object_range(gc_ref)?;
-        let data = match self.heap_slice().get(range) {
-            Some(data) => data,
-            None => bail_bug!("gc object out of bounds"),
-        };
-        Ok(data.into())
-    }
-
-    /// Get a mutable borrow of the given object's data.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error on out-of-bounds accesses or if the `gc_ref` is an
-    /// `i31ref`.
-    fn gc_object_data_mut(&mut self, gc_ref: &VMGcRef) -> Result<&mut VMGcObjectData> {
-        let range = self.object_range(gc_ref)?;
-        let data = match self.heap_slice_mut().get_mut(range) {
-            Some(data) => data,
-            None => bail_bug!("gc object out of bounds"),
-        };
-        Ok(data.into())
+        let vmmemory = self.vmmemory();
+        if range.end > vmmemory.current_length() {
+            bail_bug!("gc object out of bounds");
+        }
+        // SAFETY: the object's bytes, in the heap's memory (checked just
+        // now), which lives as long as `&self` does: from its base pointer,
+        // not `heap_slice`'s `&[u8]`, through which nothing may write.
+        Ok(unsafe {
+            VMGcObjectData::from_raw_parts(
+                vmmemory.base.as_ptr().wrapping_add(range.start),
+                range.len(),
+            )
+        })
     }
 }
 

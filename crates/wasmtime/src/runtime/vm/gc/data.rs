@@ -1,8 +1,10 @@
 //! Unchecked methods for working with the data inside GC objects.
 
 use crate::{Result, V128, bail_bug};
+use core::cell::UnsafeCell;
 use core::mem;
 use core::ops::Range;
+use core::ptr;
 
 /// A plain-old-data type that can be stored in a `ValType` or a `StorageType`.
 pub trait PodValType<const SIZE: usize>: Copy {
@@ -61,9 +63,16 @@ impl PodValType<{ mem::size_of::<V128>() }> for V128 {
 /// for preserving the memory safety of indexed GC heaps in the face of (for
 /// example) collector bugs, but the latter is just a defensive technique to
 /// catch bugs early and prevent action at a distance as much as possible.
+///
+/// kun: its bytes are cells, written through a shared reference, never a
+/// `&mut` (as V8's `TaggedField` reads and writes a heap's fields through
+/// raw pointers): a collector whose marker reads an object's GC references
+/// on another thread while the runtime writes its other fields (elise's)
+/// can't have a `&mut` cover the object. Only one writes at a time all the
+/// same: a `GcStore` hands it out borrowed mutably, and it isn't `Sync`.
 #[repr(transparent)]
 pub struct VMGcObjectData {
-    data: [u8],
+    data: [UnsafeCell<u8>],
 }
 
 macro_rules! impl_pod_methods {
@@ -86,7 +95,7 @@ macro_rules! impl_pod_methods {
             ///
             /// Returns an error on out-of-bounds accesses.
             #[inline]
-            pub fn $write(&mut self, offset: u32, val: $T) -> Result<()>
+            pub fn $write(&self, offset: u32, val: $T) -> Result<()>
             {
                 self.write_pod::<{ mem::size_of::<$T>() }, $T>(offset, val)
             }
@@ -94,31 +103,35 @@ macro_rules! impl_pod_methods {
     };
 }
 
-impl<'a> From<&'a [u8]> for &'a VMGcObjectData {
-    #[inline]
-    fn from(data: &'a [u8]) -> Self {
-        &VMGcObjectData::from_slice(data)
-    }
-}
-
-impl<'a> From<&'a mut [u8]> for &'a mut VMGcObjectData {
-    #[inline]
-    fn from(data: &'a mut [u8]) -> Self {
-        VMGcObjectData::from_slice_mut(data)
-    }
-}
-
 impl VMGcObjectData {
-    /// Construct a `VMGcObjectData` from the given slice of bytes.
+    /// kun: the object's `len` bytes at `ptr`.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` is valid for reads and writes of `len` bytes for `'a`, which
+    /// no reference but other `VMGcObjectData`s covers meanwhile (a
+    /// collector's marker may read them through raw pointers, atomically).
     #[inline]
-    pub fn from_slice(data: &[u8]) -> &Self {
-        unsafe { mem::transmute(data) }
+    pub unsafe fn from_raw_parts<'a>(ptr: *mut u8, len: usize) -> &'a Self {
+        let cells = ptr::slice_from_raw_parts(ptr.cast::<UnsafeCell<u8>>(), len);
+        // SAFETY: `UnsafeCell<u8>` is `u8`'s layout, and `VMGcObjectData` is
+        // transparent over a slice of them; valid for `'a` as the caller
+        // promises.
+        unsafe { &*(cells as *const VMGcObjectData) }
     }
 
-    /// Construct a `VMGcObjectData` from the given slice of bytes.
+    /// kun: the address of `len` bytes at `offset`, checked to be in the
+    /// object.
     #[inline]
-    pub fn from_slice_mut(data: &mut [u8]) -> &mut Self {
-        unsafe { mem::transmute(data) }
+    fn bytes(&self, offset: u32, len: usize) -> Result<*mut u8> {
+        let start = usize::try_from(offset)?;
+        match start.checked_add(len) {
+            Some(end) if end <= self.data.len() => {
+                // In bounds: a pointer into the cells, for reads and writes.
+                Ok(UnsafeCell::raw_get(self.data.as_ptr()).wrapping_add(start))
+            }
+            _ => bail_bug!("out of bounds access"),
+        }
     }
 
     /// Read a POD field out of this object.
@@ -133,12 +146,11 @@ impl VMGcObjectData {
         T: PodValType<N>,
     {
         assert_eq!(N, mem::size_of::<T>());
-        let offset = usize::try_from(offset)?;
-        let bytes = match self.data.get(offset..).and_then(|s| s.first_chunk()) {
-            Some(data) => data,
-            None => bail_bug!("out of bounds field"),
-        };
-        Ok(T::read_le(bytes))
+        let from = self.bytes(offset, N)?;
+        // SAFETY: `N` bytes of the object (`bytes`), not written meanwhile
+        // (one writer at a time, on this thread).
+        let bytes = unsafe { from.cast::<[u8; N]>().read_unaligned() };
+        Ok(T::read_le(&bytes))
     }
 
     /// Read a POD field out of this object.
@@ -148,53 +160,35 @@ impl VMGcObjectData {
     /// Don't generally use this method, use `write_u8`, `write_i64`,
     /// etc... instead.
     #[inline]
-    fn write_pod<const N: usize, T>(&mut self, offset: u32, val: T) -> Result<()>
+    fn write_pod<const N: usize, T>(&self, offset: u32, val: T) -> Result<()>
     where
         T: PodValType<N>,
     {
         assert_eq!(N, mem::size_of::<T>());
-        let offset = usize::try_from(offset)?;
-        let into = match self
-            .data
-            .get_mut(offset..)
-            .and_then(|s| s.first_chunk_mut())
-        {
-            Some(into) => into,
-            None => bail_bug!("out of bounds field"),
-        };
-        Ok(val.write_le(into))
+        let into = self.bytes(offset, N)?;
+        let mut bytes = [0; N];
+        val.write_le(&mut bytes);
+        // SAFETY: `N` bytes of the object (`bytes`), cells no reference
+        // covers but this one's.
+        unsafe { into.cast::<[u8; N]>().write_unaligned(bytes) };
+        Ok(())
     }
 
-    /// Get a slice of this object's data.
+    /// kun: copy `into.len()` bytes of this object's data at `offset` into
+    /// `into` (which a slice of the data, upstream's `slice`, can't be: the
+    /// data's cells may be written through another `VMGcObjectData`).
     ///
     /// Note that GC data is always stored in little-endian order, and this
     /// method does not do any conversions to/from host endianness for you.
     ///
     /// Returns an error on out-of-bounds accesses.
     #[inline]
-    pub fn slice(&self, offset: u32, len: u32) -> Result<&[u8]> {
-        let start = usize::try_from(offset)?;
-        let len = usize::try_from(len)?;
-        match self.data.get(start..).and_then(|s| s.get(..len)) {
-            Some(slice) => Ok(slice),
-            None => bail_bug!("out of bounds slice"),
-        }
-    }
-
-    /// Get a mutable slice of this object's data.
-    ///
-    /// Note that GC data is always stored in little-endian order, and this
-    /// method does not do any conversions to/from host endianness for you.
-    ///
-    /// Returns an error on out-of-bounds accesses.
-    #[inline]
-    pub fn slice_mut(&mut self, offset: u32, len: u32) -> Result<&mut [u8]> {
-        let start = usize::try_from(offset)?;
-        let len = usize::try_from(len)?;
-        match self.data.get_mut(start..).and_then(|s| s.get_mut(..len)) {
-            Some(slice) => Ok(slice),
-            None => bail_bug!("out of bounds slice"),
-        }
+    pub fn copy_to_slice(&self, offset: u32, into: &mut [u8]) -> Result<()> {
+        let from = self.bytes(offset, into.len())?;
+        // SAFETY: `into.len()` bytes of the object (`bytes`), which `into`,
+        // a `&mut` of its own, doesn't overlap.
+        unsafe { ptr::copy_nonoverlapping(from, into.as_mut_ptr(), into.len()) };
+        Ok(())
     }
 
     /// Copy the given slice into this object's data at the given offset.
@@ -204,17 +198,11 @@ impl VMGcObjectData {
     ///
     /// Returns an error on out-of-bounds accesses.
     #[inline]
-    pub fn copy_from_slice(&mut self, offset: u32, src: &[u8]) -> Result<()> {
-        let offset = usize::try_from(offset)?;
-        let into = match self
-            .data
-            .get_mut(offset..)
-            .and_then(|s| s.get_mut(..src.len()))
-        {
-            Some(into) => into,
-            None => bail_bug!("out of bounds copy"),
-        };
-        into.copy_from_slice(src);
+    pub fn copy_from_slice(&self, offset: u32, src: &[u8]) -> Result<()> {
+        let into = self.bytes(offset, src.len())?;
+        // SAFETY: `src.len()` bytes of the object (`bytes`), which `src`, a
+        // `&[u8]` (no `VMGcObjectData`'s cells), doesn't overlap.
+        unsafe { ptr::copy_nonoverlapping(src.as_ptr(), into, src.len()) };
         Ok(())
     }
 
@@ -225,20 +213,16 @@ impl VMGcObjectData {
     ///
     /// Returns an error on out-of-bounds accesses.
     #[inline]
-    pub fn copy_within(&mut self, src: Range<u32>, dest: u32) -> Result<()> {
-        let start = usize::try_from(src.start)?;
-        let end = usize::try_from(src.end)?;
-        let dest = usize::try_from(dest)?;
-        if self.data.get(start..end).is_none()
-            || self
-                .data
-                .get(dest..)
-                .and_then(|s| s.get(..src.len()))
-                .is_none()
-        {
+    pub fn copy_within(&self, src: Range<u32>, dest: u32) -> Result<()> {
+        let Some(len) = src.end.checked_sub(src.start) else {
             bail_bug!("invalid copy range");
-        }
-        self.data.copy_within(start..end, dest);
+        };
+        let len = usize::try_from(len)?;
+        let from = self.bytes(src.start, len)?;
+        let into = self.bytes(dest, len)?;
+        // SAFETY: two ranges of `len` bytes of the object (`bytes`), which
+        // may overlap (a `memmove`).
+        unsafe { ptr::copy(from, into, len) };
         Ok(())
     }
 

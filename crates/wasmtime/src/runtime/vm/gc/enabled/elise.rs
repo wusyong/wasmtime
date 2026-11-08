@@ -44,7 +44,7 @@ use ::elise::raw::{
 use ::elise::{HeapOptions, Id, InlinePlatform, Platform};
 use core::ptr::NonNull;
 use core::sync::atomic::AtomicUsize;
-use core::{alloc::Layout, any::Any, mem, slice};
+use core::{alloc::Layout, any::Any, mem};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use wasmtime_environ::elise::{
@@ -478,7 +478,7 @@ unsafe impl GcHeap for EliseHeap {
             Ok(gc_ref) => gc_ref,
             Err(bytes_needed) => return Ok(Err(bytes_needed)),
         };
-        self.gc_object_data_mut(&gc_ref)?
+        self.gc_object_data(&gc_ref)?
             .write_u32(EXTERNREF_HOST_DATA_OFFSET, host_data.into_raw())?;
         // SAFETY: the object just allocated.
         let id = unsafe { self.heap_mut().new_id(gc_ref.as_raw_u32()) };
@@ -651,16 +651,16 @@ unsafe impl GcHeap for EliseHeap {
 
     fn gc_object_data(&self, gc_ref: &VMGcRef) -> Result<&VMGcObjectData> {
         let (data, size) = self.object_bytes(gc_ref)?;
-        // SAFETY: a live object's bytes (`object_bytes`), committed; only
-        // `&mut self` writes them.
-        Ok(unsafe { slice::from_raw_parts(data, size) }.into())
-    }
-
-    fn gc_object_data_mut(&mut self, gc_ref: &VMGcRef) -> Result<&mut VMGcObjectData> {
-        let (data, size) = self.object_bytes(gc_ref)?;
-        // SAFETY: as `gc_object_data`'s; `&mut self` borrows the heap's
-        // objects, and no worker runs (an `InlinePlatform`).
-        Ok(unsafe { slice::from_raw_parts_mut(data, size) }.into())
+        // SAFETY: a live object's bytes (`object_bytes`), committed, which
+        // nothing moves or frees while `&self` lasts (elise moves objects
+        // only in the GCs given the roots, which take `&mut self`). No
+        // reference covers them: the runtime's are these cells, and elise's
+        // marker reads the object's GC references atomically, on its
+        // workers too. Those references are written only through
+        // `write_gc_ref_in` and `init_gc_ref_in` (elise's `write_bits`, also
+        // atomic); the runtime writes the other bytes, which the marker
+        // doesn't read (README.kun.md, "Writes alongside elise's marker").
+        Ok(unsafe { VMGcObjectData::from_raw_parts(data, size) })
     }
 }
 
