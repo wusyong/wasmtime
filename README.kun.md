@@ -31,9 +31,7 @@ from outside; the collectors are modules of the `wasmtime` crate.
   borrowed from the embedder"): the DOM's and wasm's objects in one heap.
 - There is no heap limit: elise panics when its cage is full, and a store's
   `ResourceLimiter` doesn't apply.
-- Works with elise's commit noted in the last commit of `kun` that changed
-  `crates/wasmtime/src/runtime/vm/gc/enabled/elise.rs` (elise's
-  `raw::EngineHeap`, uncommitted as this is written).
+- Works with the elise commit kun's `third_party.toml` pins beside it.
 - Built with the toolchain elise pins or newer (1.99; Wasmtime's own
   `rust-version` is 1.97).
 
