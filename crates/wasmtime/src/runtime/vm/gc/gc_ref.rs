@@ -475,7 +475,7 @@ impl VMGcRef {
             // NB: We don't need to do a write barrier when initializing a
             // field, because there is nothing being overwritten. Therefore, we
             // just the clone barrier.
-            // kun: the barrier is given the object.
+            // machopo: the barrier is given the object.
             Val::ExternRef(x) => {
                 let x = match x {
                     None => None,
@@ -486,7 +486,7 @@ impl VMGcRef {
                     .gc_heap
                     .init_gc_ref_in(self, offset, x.as_ref())
             }
-            // kun: the barrier is given the object.
+            // machopo: the barrier is given the object.
             Val::AnyRef(x) => {
                 let x = match x {
                     None => None,
@@ -497,7 +497,7 @@ impl VMGcRef {
                     .gc_heap
                     .init_gc_ref_in(self, offset, x.as_ref())
             }
-            // kun: the barrier is given the object.
+            // machopo: the barrier is given the object.
             Val::ExnRef(x) => {
                 let x = match x {
                     None => None,
@@ -556,7 +556,7 @@ impl VMGcRef {
             // able to elide some of these unnecessary copies, and this
             // method is ever hot enough, we can always come back and clean
             // it up in the future.
-            // kun: the barrier is given the object.
+            // machopo: the barrier is given the object.
             Val::ExternRef(e) => {
                 let e = match e {
                     Some(e) => Some(e.try_gc_ref(store)?.unchecked_copy()),
@@ -567,7 +567,7 @@ impl VMGcRef {
                     .gc_heap
                     .write_gc_ref_in(self, offset, e.as_ref())
             }
-            // kun: the barrier is given the object.
+            // machopo: the barrier is given the object.
             Val::AnyRef(a) => {
                 let a = match a {
                     Some(a) => Some(a.try_gc_ref(store)?.unchecked_copy()),
@@ -578,7 +578,7 @@ impl VMGcRef {
                     .gc_heap
                     .write_gc_ref_in(self, offset, a.as_ref())
             }
-            // kun: the barrier is given the object.
+            // machopo: the barrier is given the object.
             Val::ExnRef(e) => {
                 let e = match e {
                     Some(e) => Some(e.try_gc_ref(store)?.unchecked_copy()),

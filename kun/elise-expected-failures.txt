@@ -1,2 +1,0 @@
-# kun: upstream GC tests elise fails, each with why; kun/elise_tests.py reads it.
-# `name  # why`; take a test off once it passes.

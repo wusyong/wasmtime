@@ -490,7 +490,7 @@ fn grow_gc_heap(store: &mut dyn VMStore, _instance: InstanceId, bytes_needed: u6
 ///
 /// The Wasm code is responsible for initializing the object.
 ///
-/// kun: elise's too.
+/// machopo: elise's too.
 #[cfg(any(feature = "gc-drc", feature = "gc-copying", feature = "gc-elise"))]
 fn gc_alloc_raw(
     store: &mut dyn VMStore,
@@ -548,7 +548,7 @@ fn gc_alloc_raw(
     })?
 }
 
-/// kun: elise's write barrier's SATB slow path: `old`, the value of a
+/// machopo: elise's write barrier's SATB slow path: `old`, the value of a
 /// reference field compiled code is overwriting while a marking runs.
 #[cfg(feature = "gc-elise")]
 fn elise_satb(store: &mut dyn VMStore, _instance: InstanceId, old: u32) -> Result<()> {
@@ -557,7 +557,7 @@ fn elise_satb(store: &mut dyn VMStore, _instance: InstanceId, old: u32) -> Resul
     crate::runtime::vm::elise_satb(&mut *gc_store.gc_heap, old)
 }
 
-/// kun: elise's write barrier's generational slow path: compiled code wrote
+/// machopo: elise's write barrier's generational slow path: compiled code wrote
 /// `value`, a young object's reference, at `slot`, an old object's field.
 #[cfg(feature = "gc-elise")]
 fn elise_remember(

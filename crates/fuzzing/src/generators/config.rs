@@ -287,7 +287,7 @@ impl Config {
                     wasmtime_test_util::wast::Collector::DeferredReferenceCounting
                 }
                 Collector::Copying => wasmtime_test_util::wast::Collector::Copying,
-                // kun: elise, kun's GC.
+                // machopo: elise, machopo's GC.
                 #[cfg(feature = "gc-elise")]
                 Collector::Elise => wasmtime_test_util::wast::Collector::Elise,
             },
@@ -466,7 +466,7 @@ impl Config {
         log::debug!("creating wasmtime config with CLI options:\n{cfg}");
         let mut cfg = cfg.config(None).expect("failed to create wasmtime::Config");
 
-        // kun: elise checks its heap after each GC and, stressed, GCs at
+        // machopo: elise checks its heap after each GC and, stressed, GCs at
         // every allocation too.
         #[cfg(feature = "gc-elise")]
         if self.wasmtime.collector == Collector::Elise {
@@ -646,7 +646,7 @@ pub struct WasmtimeConfig {
     /// Configuration for the compiler to use.
     pub compiler_strategy: CompilerStrategy,
     collector: Collector,
-    /// kun: whether elise, if it's the collector, GCs at every allocation.
+    /// machopo: whether elise, if it's the collector, GCs at every allocation.
     #[cfg(feature = "gc-elise")]
     elise_stress: bool,
     gc_zeal_alloc_counter: Option<NonZeroU32>,
@@ -668,7 +668,7 @@ pub struct WasmtimeConfig {
 }
 
 impl WasmtimeConfig {
-    /// kun: elise as the collector, GCing at every allocation if `stress`.
+    /// machopo: elise as the collector, GCing at every allocation if `stress`.
     #[cfg(feature = "gc-elise")]
     pub fn use_elise(&mut self, stress: bool) {
         self.collector = Collector::Elise;
@@ -676,7 +676,7 @@ impl WasmtimeConfig {
         self.make_internally_consistent();
     }
 
-    /// kun: the copying collector, what elise's results are compared with.
+    /// machopo: the copying collector, what elise's results are compared with.
     pub fn use_copying(&mut self) {
         self.collector = Collector::Copying;
         self.make_internally_consistent();
@@ -869,7 +869,7 @@ impl WasmtimeConfig {
     /// these sorts of configurations. For now though it's intended to reflect
     /// the current state of the engine's development.
     pub(crate) fn make_internally_consistent(&mut self) {
-        // kun: Winch refuses elise.
+        // machopo: Winch refuses elise.
         #[cfg(feature = "gc-elise")]
         if self.collector == Collector::Elise && self.compiler_strategy == CompilerStrategy::Winch {
             self.compiler_strategy = CompilerStrategy::CraneliftNative;
@@ -1074,7 +1074,7 @@ pub enum Collector {
     DeferredReferenceCounting,
     Null,
     Copying,
-    /// kun: elise, kun's GC.
+    /// machopo: elise, machopo's GC.
     #[cfg(feature = "gc-elise")]
     Elise,
 }

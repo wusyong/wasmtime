@@ -33,7 +33,7 @@ fn main() {
         compilers.truncate(1);
     }
 
-    // kun: with `WASMTIME_TEST_COLLECTOR=elise` (or `elise-stress`, as
+    // machopo: with `WASMTIME_TEST_COLLECTOR=elise` (or `elise-stress`, as
     // `gc_engine()` in `tests/all/main.rs` reads it), only the tests of GC
     // types, with elise as the collector, compiled by Cranelift natively and
     // for Pulley (Winch refuses elise).
@@ -125,7 +125,7 @@ fn run_wast(test: &WastTest, config: WastConfig) -> wasmtime::Result<()> {
     cfg.shared_memory(true);
     wasmtime_test_util::wasmtime_wast::apply_test_config(&mut cfg, &test_config);
     wasmtime_test_util::wasmtime_wast::apply_wast_config(&mut cfg, &config);
-    // kun: elise checks its heap after each GC, and with `elise-stress` GCs
+    // machopo: elise checks its heap after each GC, and with `elise-stress` GCs
     // at each allocation too.
     #[cfg(feature = "gc-elise")]
     if config.collector == Collector::Elise {

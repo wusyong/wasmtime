@@ -1,7 +1,7 @@
-//! kun: the stores that borrow an embedder's elise heap
+//! machopo: the stores that borrow an embedder's elise heap
 //! (`Config::elise_heap_provider`), a `StoreSet`'s.
 //!
-//! The heap is the embedder's (kun's DOM's), and its GCs run in the
+//! The heap is the embedder's (machopo's DOM's), and its GCs run in the
 //! embedder's calls and in each store's: every GC that reads the roots
 //! needs each store's. The set owns its stores, so it knows them all, and
 //! which it lends now: its roots source (`SetSource`) gives elise the roots
@@ -36,9 +36,9 @@ impl<T: 'static> SetStore for RefCell<Option<Store<T>>> {
     }
 }
 
-/// kun: the stores that borrow the embedder's elise heap
+/// machopo: the stores that borrow the embedder's elise heap
 /// (`Config::elise_heap_provider`) its thread lends now: a document's, as
-/// kun's. A store of an engine with a provider allocates its GC heap only
+/// machopo's. A store of an engine with a provider allocates its GC heap only
 /// in a set (else that fails), and the set owns it: it lends it
 /// (`with`) and drops it (`remove`). Not `Send` (its stores are behind
 /// `Rc`, shared with the heap's roots source): they stay on the heap's

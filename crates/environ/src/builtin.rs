@@ -77,7 +77,7 @@ macro_rules! foreach_builtin_function {
             // Allocate a new, uninitialized GC object and return a reference to
             // it.
             //
-            // kun: elise's too.
+            // machopo: elise's too.
             #[cfg(any(feature = "gc-drc", feature = "gc-copying", feature = "gc-elise"))]
             gc_alloc_raw(
                 vmctx: vmctx,
@@ -87,7 +87,7 @@ macro_rules! foreach_builtin_function {
                 align: u32
             ) -> u32;
 
-            // kun: elise's write barrier's slow paths. `elise_satb` takes
+            // machopo: elise's write barrier's slow paths. `elise_satb` takes
             // the old value of a GC object's reference field overwritten
             // while a marking runs; `elise_remember` an old object's field
             // just written a young object's reference (`slot`, the field's

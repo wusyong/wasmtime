@@ -315,7 +315,7 @@ fn expand(test_config: &TestConfig, func: Fn) -> Result<TokenStream> {
                 Collector::Null => Some("null"),
                 Collector::DeferredReferenceCounting => Some("drc"),
                 Collector::Copying => Some("copying"),
-                // kun: elise, kun's GC (no test asks for it here).
+                // machopo: elise, machopo's GC (no test asks for it here).
                 Collector::Elise => Some("elise"),
             };
             let test_name = match collector_suffix {

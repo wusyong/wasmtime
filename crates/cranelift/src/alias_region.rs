@@ -190,11 +190,11 @@ enum AliasRegionKey {
     /// An access of an exception object's tag-defined word.
     GcExnTagDefined,
 
-    /// kun: an access of elise's barrier state, what `VMContext::gc_heap_data`
+    /// machopo: an access of elise's barrier state, what `VMContext::gc_heap_data`
     /// points at with that collector (its layout is elise's).
     EliseBarrierState,
 
-    /// kun: an access of elise's young pages' flags, which its barrier state
+    /// machopo: an access of elise's young pages' flags, which its barrier state
     /// points at.
     EliseYoungPages,
 }
@@ -1292,12 +1292,12 @@ where
         introducer
     }
 
-    /// kun: get the alias region of elise's barrier state.
+    /// machopo: get the alias region of elise's barrier state.
     pub fn elise_barrier_state_region(&mut self, func: &mut ir::Function) -> ir::AliasRegion {
         self.region(func, AliasRegionKey::EliseBarrierState)
     }
 
-    /// kun: get the alias region of elise's young pages' flags.
+    /// machopo: get the alias region of elise's young pages' flags.
     pub fn elise_young_pages_region(&mut self, func: &mut ir::Function) -> ir::AliasRegion {
         self.region(func, AliasRegionKey::EliseYoungPages)
     }

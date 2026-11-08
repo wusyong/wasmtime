@@ -43,14 +43,14 @@ pub unsafe trait GcRuntime: 'static + Send + Sync {
     #[cfg(feature = "gc")]
     fn new_gc_heap(&self, engine: &crate::Engine) -> Result<Box<dyn GcHeap>>;
 
-    /// kun: the engine registered the GC type `ty`, of `layout` (none of
+    /// machopo: the engine registered the GC type `ty`, of `layout` (none of
     /// its objects is allocated before).
     fn register_type(&self, ty: VMSharedTypeIndex, layout: &GcLayout) -> Result<(), OutOfMemory> {
         let _ = (ty, layout);
         Ok(())
     }
 
-    /// kun: the engine unregistered the GC type `ty`: nothing holds it, so
+    /// machopo: the engine unregistered the GC type `ty`: nothing holds it, so
     /// no store allocates it, nor has a reachable object of it (a store
     /// holds every type it allocated as long as it lives).
     fn unregister_type(&self, ty: VMSharedTypeIndex) {
@@ -137,7 +137,7 @@ pub unsafe trait GcHeap: 'static + Send + Sync {
     ////////////////////////////////////////////////////////////////////////////
     // No-GC Scope Methods
 
-    /// kun: whether this thread may use the heap (an embedder's heap of
+    /// machopo: whether this thread may use the heap (an embedder's heap of
     /// elise's, borrowed: its thread's, alive), as wasm is entered or
     /// resumed: compiled code reads and writes it without asking.
     fn check_thread(&self) -> Result<()> {
@@ -222,7 +222,7 @@ pub unsafe trait GcHeap: 'static + Send + Sync {
     /// failures such as panics or incorrect results.
     fn expose_gc_ref_to_wasm(&mut self, gc_ref: VMGcRef) -> Result<()>;
 
-    /// kun: write barrier for the runtime overwriting the GC reference at
+    /// machopo: write barrier for the runtime overwriting the GC reference at
     /// `offset` of `object` with `source`: a collector that remembers which
     /// objects point where (a generational one) needs the object, which
     /// `write_gc_ref` isn't given.
@@ -245,7 +245,7 @@ pub unsafe trait GcHeap: 'static + Send + Sync {
             .write_u32(offset, destination.map_or(0, |r| r.as_raw_u32()))
     }
 
-    /// kun: barrier for the runtime initializing the GC reference at
+    /// machopo: barrier for the runtime initializing the GC reference at
     /// `offset` of `object`, allocated just now, with `source`.
     ///
     /// Defaults to `clone_gc_ref`: nothing is overwritten.
@@ -504,7 +504,7 @@ pub unsafe trait GcHeap: 'static + Send + Sync {
     /// updated `VMMemoryDefinition` record.
     fn vmmemory(&self) -> VMMemoryDefinition;
 
-    /// kun: the GC heap's capacity, in bytes.
+    /// machopo: the GC heap's capacity, in bytes.
     ///
     /// Defaults to `heap_slice`'s length: the GC heap is the whole of the
     /// memory (a collector whose heap is mostly reserved, not accessible,
@@ -606,7 +606,7 @@ pub unsafe trait GcHeap: 'static + Send + Sync {
         Ok(start..end)
     }
 
-    /// Get the given object's data, to read and write (kun: its bytes are
+    /// Get the given object's data, to read and write (machopo: its bytes are
     /// cells, so no `&mut` covers the object; see `VMGcObjectData`).
     ///
     /// # Errors

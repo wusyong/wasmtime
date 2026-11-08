@@ -155,7 +155,7 @@ impl Engine {
             wasmtime_environ::Module::new(wasmtime_environ::StaticModuleIndex::from_u32(0)),
         )?)?;
 
-        // kun: the type registry holds it too.
+        // machopo: the type registry holds it too.
         #[cfg(feature = "runtime")]
         let gc_runtime = config.build_gc_runtime()?;
 

@@ -542,7 +542,7 @@ pub use self::error::{Error, OutOfMemory, Result, bail, ensure, format_err};
 #[cfg(feature = "reexport-wasmparser")]
 pub use wasmparser;
 
-/// kun: elise, the GC of [`Collector::Elise`], for [`Config::elise_heap`].
+/// machopo: elise, the GC of [`Collector::Elise`], for [`Config::elise_heap`].
 #[cfg(feature = "gc-elise")]
 pub use elise;
 

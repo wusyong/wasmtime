@@ -156,7 +156,7 @@ pub trait GcCompiler {
         flags: ir::MemFlagsData,
     ) -> WasmResult<()>;
 
-    /// kun: [`Self::translate_write_gc_reference`] for a GC object's field:
+    /// machopo: [`Self::translate_write_gc_reference`] for a GC object's field:
     /// `dst` is in the GC heap. A collector that records which objects
     /// point where (a generational one) has barriers there, and none on a
     /// root's (a table's, a global's), which the other is used for.
@@ -205,7 +205,7 @@ pub trait GcCompiler {
 
 mod copying;
 mod drc;
-// kun: elise, kun's GC.
+// machopo: elise, machopo's GC.
 mod elise;
 mod null;
 
@@ -222,7 +222,7 @@ pub fn gc_compiler(func_env: &mut FuncEnvironment<'_>) -> WasmResult<Box<dyn GcC
 
         Some(Collector::Copying) => Ok(Box::new(copying::CopyingCompiler::default())),
 
-        // kun: elise, kun's GC.
+        // machopo: elise, machopo's GC.
         Some(Collector::Elise) => Ok(Box::new(elise::EliseCompiler::default())),
 
         None => Err(wasm_unsupported!(
@@ -595,7 +595,7 @@ pub fn write_field_at_addr(
             WasmHeapTopType::Func => {
                 write_func_ref_at_addr(func_env, builder, r, flags, field_addr, new_val)?
             }
-            // kun: a field's, told from a root's.
+            // machopo: a field's, told from a root's.
             WasmHeapTopType::Extern | WasmHeapTopType::Any | WasmHeapTopType::Exn => {
                 gc_compiler(func_env)?.translate_write_gc_field(
                     func_env, builder, r, field_addr, new_val, flags,

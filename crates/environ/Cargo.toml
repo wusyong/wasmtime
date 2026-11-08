@@ -76,7 +76,7 @@ gc = []
 gc-drc = ["gc"]
 gc-null = ["gc"]
 gc-copying = ["gc"]
-# kun: elise, kun's GC, as a collector.
+# machopo: elise, machopo's GC, as a collector.
 gc-elise = ["gc"]
 compile = [
   'gimli/write',

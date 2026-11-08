@@ -704,7 +704,7 @@ pub fn gc_ops(fuzz_config: generators::Config, ops: GcOps) -> Result<usize> {
     gc_ops_outcome(fuzz_config, ops).map(|(gcs, _)| gcs)
 }
 
-/// kun: how a `gc_ops` test case ended, which two collectors' runs of it
+/// machopo: how a `gc_ops` test case ended, which two collectors' runs of it
 /// agree on unless one ran out of memory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GcOpsOutcome {
@@ -716,7 +716,7 @@ pub enum GcOpsOutcome {
     Trap(Trap),
 }
 
-/// kun: `gc_ops`, telling how the test case ended too.
+/// machopo: `gc_ops`, telling how the test case ended too.
 pub fn gc_ops_outcome(
     mut fuzz_config: generators::Config,
     mut ops: GcOps,
@@ -1321,7 +1321,7 @@ mod tests {
     use crate::test::{gen_until_pass, test_n_times};
     use wasmparser::{Validator, WasmFeatures};
 
-    /// kun: `gc_ops`'s test cases from fixed seeds, the configs' collector
+    /// machopo: `gc_ops`'s test cases from fixed seeds, the configs' collector
     /// elise: `(seed, config, ops)`.
     #[cfg(feature = "gc-elise")]
     fn elise_gc_ops_cases(stress: bool) -> impl Iterator<Item = (u64, generators::Config, GcOps)> {
@@ -1351,11 +1351,11 @@ mod tests {
         })
     }
 
-    /// kun: how many seeds elise's `gc_ops` tests take.
+    /// machopo: how many seeds elise's `gc_ops` tests take.
     #[cfg(feature = "gc-elise")]
     const ELISE_GC_OPS_SEEDS: u64 = 200;
 
-    // kun: elise passes `gc_ops`'s checks (each externref's host data given
+    // machopo: elise passes `gc_ops`'s checks (each externref's host data given
     // back, the traps it allows, elise's own heap checks after each GC) for
     // fixed seeds, GCing as usual and at every allocation.
     #[test]
@@ -1381,7 +1381,7 @@ mod tests {
         }
     }
 
-    // kun: the copying collector's runs of the same cases end the same way,
+    // machopo: the copying collector's runs of the same cases end the same way,
     // unless one of them ran out of memory, with as many GCs.
     #[test]
     #[cfg(feature = "gc-elise")]

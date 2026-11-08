@@ -128,7 +128,7 @@ pub use self::async_::CallHookHandler;
 mod gc;
 #[cfg(not(feature = "gc"))]
 mod gc_disabled;
-// kun: the stores that borrow an embedder's elise heap.
+// machopo: the stores that borrow an embedder's elise heap.
 #[cfg(feature = "gc-elise")]
 mod elise;
 #[cfg(feature = "gc-elise")]
@@ -481,7 +481,7 @@ pub struct StoreOpaque {
     host_globals: TryPrimaryMap<DefinedGlobalIndex, StoreBox<VMHostGlobalContext>>,
     // GC-related fields.
     gc_store: Option<GcStore>,
-    /// kun: its place in a `StoreSet`, whose heap its GC heap borrows.
+    /// machopo: its place in a `StoreSet`, whose heap its GC heap borrows.
     #[cfg(feature = "gc-elise")]
     pub(crate) elise_slot: Option<crate::runtime::vm::EliseSlot>,
     #[cfg(feature = "gc")]

@@ -446,7 +446,7 @@ pub enum Collector {
     Null,
     /// The copying collector.
     Copying,
-    /// kun: elise, kun's GC.
+    /// machopo: elise, machopo's GC.
     Elise,
 }
 

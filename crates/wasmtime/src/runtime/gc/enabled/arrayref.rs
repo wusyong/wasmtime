@@ -743,7 +743,7 @@ impl ArrayRef {
         let data = store
             .require_gc_store_mut()?
             .gc_object_data(arrayref.as_gc_ref())?;
-        // kun: copied out, not lent: the data is cells (`VMGcObjectData`).
+        // machopo: copied out, not lent: the data is cells (`VMGcObjectData`).
         data.copy_to_slice(layout.base_size, dst)
     }
 

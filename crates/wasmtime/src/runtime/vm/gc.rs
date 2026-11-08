@@ -132,7 +132,7 @@ impl GcStore {
 
     /// Get the current capacity (in bytes) of this GC heap.
     pub fn gc_heap_capacity(&self) -> usize {
-        // kun: the heap says, without a slice of all of it.
+        // machopo: the heap says, without a slice of all of it.
         self.gc_heap.capacity()
     }
 
@@ -367,7 +367,7 @@ impl GcStore {
     ///
     /// Panics when the structref and its size is out of the GC heap bounds.
     ///
-    /// kun: shared (its bytes are cells, written through it too), and still
+    /// machopo: shared (its bytes are cells, written through it too), and still
     /// taking `&mut self`: one writer at a time, the store's.
     pub fn gc_object_data(&mut self, gc_ref: &VMGcRef) -> Result<&VMGcObjectData> {
         self.gc_heap.gc_object_data(gc_ref)

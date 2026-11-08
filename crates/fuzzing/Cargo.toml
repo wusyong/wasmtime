@@ -84,5 +84,5 @@ wasm-spec-interpreter = { path = "./wasm-spec-interpreter", optional = true, fea
 default = ['v8']
 fuzz-spec-interpreter = ['dep:wasm-spec-interpreter']
 v8 = ['dep:v8']
-# kun: elise, kun's GC, among the collectors a fuzz config can choose.
+# machopo: elise, machopo's GC, among the collectors a fuzz config can choose.
 gc-elise = ['wasmtime/gc-elise']

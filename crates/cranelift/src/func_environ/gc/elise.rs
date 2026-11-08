@@ -1,4 +1,4 @@
-//! kun: compiler for elise, kun's GC, and its barriers.
+//! machopo: compiler for elise, machopo's GC, and its barriers.
 //!
 //! Allocation goes through the `gc_alloc_raw` libcall, as the DRC
 //! collector's: elise's nursery isn't bumped inline. Writes of a GC

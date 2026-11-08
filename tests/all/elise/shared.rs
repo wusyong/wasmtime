@@ -1,4 +1,4 @@
-//! kun: stores that borrow the embedder's elise heap
+//! machopo: stores that borrow the embedder's elise heap
 //! (`Config::elise_heap_provider`), a `StoreSet`'s. The embedder's
 //! safepoints' GCs and each store's keep every store's objects (their
 //! globals'), moved; none that reads the roots runs while another store is
@@ -21,7 +21,7 @@ thread_local! {
     static DOM: RefCell<Option<(u64, Heap)>> = const { RefCell::new(None) };
 }
 
-/// Lends the thread's `DOM`, as kun's provider lends its DOM's heap.
+/// Lends the thread's `DOM`, as machopo's provider lends its DOM's heap.
 struct Lender;
 
 impl EliseHeapProvider for Lender {

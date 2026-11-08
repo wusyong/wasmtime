@@ -15,7 +15,7 @@ mod custom_code_memory;
 mod debug;
 mod debug_component;
 mod defaults;
-// kun: elise, kun's GC, as the collector.
+// machopo: elise, machopo's GC, as the collector.
 #[cfg(feature = "gc-elise")]
 mod elise;
 mod engine;
@@ -148,8 +148,8 @@ pub(crate) fn gc_engine() -> Result<wasmtime::Engine> {
     let mut config = wasmtime::Config::new();
     config.wasm_function_references(true);
     config.wasm_gc(true);
-    // kun: `WASMTIME_TEST_COLLECTOR=elise` runs these tests with elise,
-    // kun's GC, checking its heap after each GC; `elise-stress` GCs at each
+    // machopo: `WASMTIME_TEST_COLLECTOR=elise` runs these tests with elise,
+    // machopo's GC, checking its heap after each GC; `elise-stress` GCs at each
     // allocation too.
     #[cfg(feature = "gc-elise")]
     if let Ok(collector @ ("elise" | "elise-stress")) =

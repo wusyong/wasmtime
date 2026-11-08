@@ -1468,7 +1468,7 @@ pub(crate) fn invoke_wasm_and_catch_traps<T>(
     // restored upon exiting Wasm. Note that the `CallThreadState` that is
     // created by the `catch_traps` call below will store a pointer to this
     // stack-allocated `previous_runtime_state`.
-    // kun: compiled code reads and writes a borrowed elise heap without
+    // machopo: compiled code reads and writes a borrowed elise heap without
     // asking: only on its thread, while it lives.
     #[cfg(feature = "gc-elise")]
     if let Some(gc_store) = store.0.optional_gc_store_mut() {

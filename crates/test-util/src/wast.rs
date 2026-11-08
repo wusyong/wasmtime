@@ -521,7 +521,7 @@ pub enum Collector {
     Null,
     DeferredReferenceCounting,
     Copying,
-    /// kun: elise, kun's GC.
+    /// machopo: elise, machopo's GC.
     Elise,
 }
 

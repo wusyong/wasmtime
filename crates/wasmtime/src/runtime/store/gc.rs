@@ -662,7 +662,7 @@ impl StoreOpaque {
     async fn do_gc(&mut self, asyncness: Asyncness) -> Result<()> {
         // If the GC heap hasn't been initialized, there is nothing to collect.
         if self.gc_store.is_none() {
-            // kun: but a `StoreSet`'s store borrows the set's heap, the
+            // machopo: but a `StoreSet`'s store borrows the set's heap, the
             // embedder's objects' too: its GC runs, given none of this
             // store's roots (it has no GC reference without a GC heap).
             #[cfg(feature = "gc-elise")]
@@ -725,7 +725,7 @@ impl StoreOpaque {
         Ok(())
     }
 
-    /// kun: this store's roots, for its `StoreSet`'s roots source
+    /// machopo: this store's roots, for its `StoreSet`'s roots source
     /// (`SetSource`): each of its GC references to the heap off it, as its
     /// own GC finds them (`trace_roots`), given to `visit` as bits and
     /// written back. The same ones in the same order each time, while
@@ -1073,7 +1073,7 @@ impl StoreOpaque {
                 },
             };
         heap.attach(mem);
-        // kun: a GC heap that borrows the embedder's elise heap is bound to
+        // machopo: a GC heap that borrows the embedder's elise heap is bound to
         // it, through its store's `StoreSet`.
         #[cfg(feature = "gc-elise")]
         if let Err(e) = vm::elise_bind(&mut *heap, self.elise_slot.as_ref()) {

@@ -162,10 +162,10 @@ pub struct Config {
     target: Option<target_lexicon::Triple>,
     #[cfg(feature = "gc")]
     collector: Collector,
-    /// kun: elise's heap options and platform (`Config::elise_heap`).
+    /// machopo: elise's heap options and platform (`Config::elise_heap`).
     #[cfg(feature = "gc-elise")]
     elise_heap: Option<(crate::elise::HeapOptions, Arc<dyn crate::elise::Platform>)>,
-    /// kun: the embedder's elise heap the stores borrow
+    /// machopo: the embedder's elise heap the stores borrow
     /// (`Config::elise_heap_provider`).
     #[cfg(feature = "gc-elise")]
     elise_heap_provider: Option<Arc<dyn crate::EliseHeapProvider>>,
@@ -1502,7 +1502,7 @@ impl Config {
         self
     }
 
-    /// kun: the options and platform of each store's heap with
+    /// machopo: the options and platform of each store's heap with
     /// [`Collector::Elise`]. By default `HeapOptions::default()` and an
     /// `InlinePlatform`: no thread of its own.
     #[cfg(feature = "gc-elise")]
@@ -1515,8 +1515,8 @@ impl Config {
         self
     }
 
-    /// kun: with [`Collector::Elise`], each store's GC heap borrows the
-    /// embedder's elise heap that `provider` lends (kun's DOM's), which
+    /// machopo: with [`Collector::Elise`], each store's GC heap borrows the
+    /// embedder's elise heap that `provider` lends (machopo's DOM's), which
     /// holds the embedder's objects too, instead of owning one. Such stores
     /// are a [`StoreSet`](crate::StoreSet)'s, which gives the heap their
     /// roots, and stay on the heap's thread. [`Config::elise_heap`]'s
@@ -1530,7 +1530,7 @@ impl Config {
         self
     }
 
-    /// kun: [`Config::elise_heap_provider`]'s.
+    /// machopo: [`Config::elise_heap_provider`]'s.
     #[cfg(feature = "gc-elise")]
     pub(crate) fn elise_provider(&self) -> Option<&Arc<dyn crate::EliseHeapProvider>> {
         self.elise_heap_provider.as_ref()
@@ -3042,7 +3042,7 @@ impl Config {
                 #[cfg(not(feature = "gc-copying"))]
                 Collector::Copying => unreachable!(),
 
-                // kun: elise, kun's GC.
+                // machopo: elise, machopo's GC.
                 #[cfg(feature = "gc-elise")]
                 Collector::Elise => try_new::<Arc<_>>(crate::runtime::vm::EliseCollector::new(
                     self.elise_heap.clone(),
@@ -3754,7 +3754,7 @@ pub enum Collector {
     /// functional.
     Copying,
 
-    /// kun: elise, kun's GC: a generational, concurrently marking collector
+    /// machopo: elise, machopo's GC: a generational, concurrently marking collector
     /// whose heap is its own 4 GiB cage (the GC heap's memory is only held).
     ///
     /// It doesn't compile GC instructions yet: only the host's API reaches
@@ -3814,7 +3814,7 @@ impl Collector {
                  the `gc-copying` feature was not enabled at compile time",
             ),
 
-            // kun: elise is chosen only by name, never as `Auto`.
+            // machopo: elise is chosen only by name, never as `Auto`.
             #[cfg(feature = "gc-elise")]
             Some(c @ Collector::Elise) => Ok(c),
             #[cfg(not(feature = "gc-elise"))]

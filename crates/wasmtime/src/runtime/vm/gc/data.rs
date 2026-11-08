@@ -64,7 +64,7 @@ impl PodValType<{ mem::size_of::<V128>() }> for V128 {
 /// example) collector bugs, but the latter is just a defensive technique to
 /// catch bugs early and prevent action at a distance as much as possible.
 ///
-/// kun: its bytes are cells, written through a shared reference, never a
+/// machopo: its bytes are cells, written through a shared reference, never a
 /// `&mut` (as V8's `TaggedField` reads and writes a heap's fields through
 /// raw pointers): a collector whose marker reads an object's GC references
 /// on another thread while the runtime writes its other fields (elise's)
@@ -104,7 +104,7 @@ macro_rules! impl_pod_methods {
 }
 
 impl VMGcObjectData {
-    /// kun: the object's `len` bytes at `ptr`.
+    /// machopo: the object's `len` bytes at `ptr`.
     ///
     /// # Safety
     ///
@@ -120,7 +120,7 @@ impl VMGcObjectData {
         unsafe { &*(cells as *const VMGcObjectData) }
     }
 
-    /// kun: the address of `len` bytes at `offset`, checked to be in the
+    /// machopo: the address of `len` bytes at `offset`, checked to be in the
     /// object.
     #[inline]
     fn bytes(&self, offset: u32, len: usize) -> Result<*mut u8> {
@@ -174,7 +174,7 @@ impl VMGcObjectData {
         Ok(())
     }
 
-    /// kun: copy `into.len()` bytes of this object's data at `offset` into
+    /// machopo: copy `into.len()` bytes of this object's data at `offset` into
     /// `into` (which a slice of the data, upstream's `slice`, can't be: the
     /// data's cells may be written through another `VMGcObjectData`).
     ///

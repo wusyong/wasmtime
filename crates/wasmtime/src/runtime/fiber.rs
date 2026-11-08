@@ -728,7 +728,7 @@ fn resume_fiber<'a>(
     result: WasmtimeResume,
 ) -> Result<WasmtimeComplete, StoreFiberYield> {
     assert_eq!(store.id(), fiber.id);
-    // kun: as `invoke_wasm_and_catch_traps` checks. No error can be given
+    // machopo: as `invoke_wasm_and_catch_traps` checks. No error can be given
     // here, and a panic would drop the fiber's future, which resumes the
     // fiber to dispose of it: here again.
     #[cfg(feature = "gc-elise")]

@@ -29,7 +29,7 @@ mod copying;
 #[cfg(feature = "gc-copying")]
 pub use copying::*;
 
-// kun: elise, kun's GC.
+// machopo: elise, machopo's GC.
 #[cfg(feature = "gc-elise")]
 mod elise;
 #[cfg(feature = "gc-elise")]

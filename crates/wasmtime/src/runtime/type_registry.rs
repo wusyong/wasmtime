@@ -644,20 +644,20 @@ impl RecGroupEntry {
     }
 }
 
-/// kun: the engine's GC runtime, which the registry tells of GC types it
+/// machopo: the engine's GC runtime, which the registry tells of GC types it
 /// unregisters.
 #[derive(Default)]
-struct KunGcRuntime(Option<Arc<dyn GcRuntime>>);
+struct MachopoGcRuntime(Option<Arc<dyn GcRuntime>>);
 
-impl fmt::Debug for KunGcRuntime {
+impl fmt::Debug for MachopoGcRuntime {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("KunGcRuntime")
+        f.write_str("MachopoGcRuntime")
     }
 }
 
 #[derive(Debug, Default)]
 struct TypeRegistryInner {
-    kun_gc_runtime: KunGcRuntime,
+    machopo_gc_runtime: MachopoGcRuntime,
 
     // A hash map from a canonicalized-for-hash-consing rec group to its
     // `VMSharedTypeIndex`es.
@@ -1246,7 +1246,7 @@ impl TypeRegistryInner {
                 wasmtime_environ::WasmCompositeInnerType::Cont(_) => continue, // FIXME: #10248 stack switching support.
             };
 
-            // kun: the collector registers the type too.
+            // machopo: the collector registers the type too.
             gc_runtime.register_type(ty_idx, &gc_layout)?;
 
             debug_assert!(self.type_to_gc_layout.capacity() <= self.types.capacity());
@@ -1272,9 +1272,9 @@ impl TypeRegistryInner {
         }
 
         for ty in &entry.0.shared_type_indices {
-            // kun: and lets it go.
+            // machopo: and lets it go.
             if self.type_to_gc_layout.remove(*ty).flatten().is_some()
-                && let Some(gc_runtime) = &self.kun_gc_runtime.0
+                && let Some(gc_runtime) = &self.machopo_gc_runtime.0
             {
                 gc_runtime.unregister_type(*ty);
             }
@@ -1352,7 +1352,7 @@ impl TypeRegistryInner {
         // NB: Destructure to make sure we are considering every field in
         // `self`.
         let TypeRegistryInner {
-            kun_gc_runtime: _,
+            machopo_gc_runtime: _,
             hash_consing_map,
             types,
             type_to_rec_group,
@@ -1679,7 +1679,7 @@ impl TypeRegistryInner {
 impl Drop for TypeRegistryInner {
     fn drop(&mut self) {
         let TypeRegistryInner {
-            kun_gc_runtime: _,
+            machopo_gc_runtime: _,
             hash_consing_map,
             types,
             type_to_rec_group,
@@ -1732,10 +1732,10 @@ pub struct TypeRegistry(RwLock<TypeRegistryInner>);
 impl TypeRegistry {
     /// Creates a new shared type registry.
     ///
-    /// kun: given the engine's GC runtime.
+    /// machopo: given the engine's GC runtime.
     pub fn new(gc_runtime: Option<Arc<dyn GcRuntime>>) -> Self {
         let mut inner = TypeRegistryInner::default();
-        inner.kun_gc_runtime = KunGcRuntime(gc_runtime);
+        inner.machopo_gc_runtime = MachopoGcRuntime(gc_runtime);
         Self(RwLock::new(inner))
     }
 

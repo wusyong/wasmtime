@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""kun: runs upstream's GC tests with elise as the collector.
+"""machopo: runs upstream's GC tests with elise as the collector.
 
 The tests the `gc_engine()` helper's engine runs (`tests/all/main.rs`) take
 elise as their collector with `WASMTIME_TEST_COLLECTOR=elise`, which checks
@@ -7,11 +7,11 @@ the heap after every GC, and `elise-stress`, which GCs at every allocation
 too. So do the spec tests of GC types (`tests/wast.rs`, which needs the
 `tests/spec_testsuite` and `tests/component-model` submodules), compiled by
 Cranelift natively and for Pulley. Those elise can't pass yet are listed in
-`kun/elise-expected-failures.txt`, each with why; this runs the modules and
+`machopo/elise-expected-failures.txt`, each with why; this runs the modules and
 the spec tests both ways, and fails if a test outside the list fails, or one
 on it passes (take it off the list).
 
-    python3 kun/elise_tests.py [extra filters for `tests/all`...]
+    python3 machopo/elise_tests.py [extra filters for `tests/all`...]
 """
 
 import os
@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-LIST = ROOT / 'kun' / 'elise-expected-failures.txt'
+LIST = ROOT / 'machopo' / 'elise-expected-failures.txt'
 # The modules whose tests use `gc_engine()` or `gc_store()`.
 MODULES = ['structs::', 'arrays::', 'gc::', 'exnrefs::', 'eqref::']
 # libtest-mimic pads the names.

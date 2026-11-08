@@ -1,4 +1,4 @@
-//! kun: layout of Wasm GC objects in elise, kun's GC.
+//! machopo: layout of Wasm GC objects in elise, machopo's GC.
 //!
 //! elise's own header comes before an object's data, out of these layouts:
 //! the data starts with the `VMGcHeader`, and a `VMGcRef` is the data's

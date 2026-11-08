@@ -108,7 +108,7 @@ pub use store::{
     AsContext, AsContextMut, CallHook, Store, StoreContext, StoreContextMut, StoreHookState,
     UpdateDeadline,
 };
-// kun: an embedder's elise heap that stores borrow.
+// machopo: an embedder's elise heap that stores borrow.
 #[cfg(feature = "gc-elise")]
 pub use store::StoreSet;
 pub use trap::*;

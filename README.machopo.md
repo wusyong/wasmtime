@@ -1,16 +1,16 @@
-# Wasmtime (kun's fork)
+# Wasmtime (machopo's fork)
 
 | | |
 | --- | --- |
 | Upstream | https://github.com/bytecodealliance/wasmtime (fetched by URL; no remote) |
 | Fork | https://github.com/wusyong/wasmtime (remote `origin`) |
-| Branch | `kun`, from upstream's tag `v50.0.1` (`c307ec81de`); the fork's `main` is upstream's, untouched |
+| Branch | `machopo`, from upstream's tag `v50.0.1` (`c307ec81de`); the fork's `main` is upstream's, untouched |
 | License | Apache-2.0 WITH LLVM-exception (`LICENSE`) |
-| Used by | kun's `dom_wasm` (by path, version pinned), with `gc-elise` on: its stores borrow the DOM's heap (`Config::elise_heap_provider`, a `StoreSet`'s). Elise is beside it (`../elise`, by path), the one kun builds too |
+| Used by | machopo's `dom_wasm` (by path, version pinned), with `gc-elise` on: its stores borrow the DOM's heap (`Config::elise_heap_provider`, a `StoreSet`'s). Elise is beside it (`../elise`, by path), the one machopo builds too |
 
 ## Why a fork
 
-To find out whether Wasmtime can take elise, kun's GC, as its collector,
+To find out whether Wasmtime can take elise, machopo's GC, as its collector,
 and whether a store's GC heap can be the DOM's heap: wasm GC objects and
 DOM nodes in one heap, one GC. Upstream has no way to plug in a collector
 from outside; the collectors are modules of the `wasmtime` crate.
@@ -31,7 +31,7 @@ from outside; the collectors are modules of the `wasmtime` crate.
   borrowed from the embedder"): the DOM's and wasm's objects in one heap.
 - There is no heap limit: elise panics when its cage is full, and a store's
   `ResourceLimiter` doesn't apply.
-- Works with the elise commit kun's `third_party.toml` pins beside it.
+- Works with the elise commit machopo's `third_party.toml` pins beside it.
 - Built with the toolchain elise pins or newer (1.99; Wasmtime's own
   `rust-version` is 1.97).
 
@@ -74,7 +74,7 @@ from outside; the collectors are modules of the `wasmtime` crate.
 ## A heap borrowed from the embedder
 
 With `Config::elise_heap_provider`, a store's GC heap owns no elise heap:
-it borrows the embedder's (kun's DOM's), which holds the embedder's
+it borrows the embedder's (machopo's DOM's), which holds the embedder's
 objects too, through the provider, which lends a thread's heap by a key
 (`EliseHeapProvider::with_heap`). The heap's GCs run in the embedder's
 calls (its safepoints) and in each store's, so every GC that reads the
@@ -171,7 +171,7 @@ races with elise's marker.
 
 ## Local modifications
 
-Each is marked with a `kun:` comment.
+Each is marked with a `machopo:` comment.
 
 - `crates/environ`: `Collector::Elise`; the feature `gc-elise`; elise's
   layouts and barrier state's offsets (`src/gc/elise.rs`); the builtins
@@ -236,7 +236,7 @@ Each is marked with a `kun:` comment.
   `oracles::gc_ops_outcome`, how a `gc_ops` case ended; tests of `gc_ops`
   with elise for fixed seeds, and comparing elise's runs with the copying
   collector's.
-- `kun/`: running upstream's GC tests with elise.
+- `machopo/`: running upstream's GC tests with elise.
 
 ## Tests
 
@@ -246,16 +246,16 @@ MIRIFLAGS="-Zmiri-disable-isolation -Zmiri-permissive-provenance" \
   cargo +nightly miri test --features gc-elise --test all -- elise::a_marking_on_workers
                                                                  # its marker beside the host's writes, under Miri
 cargo test -p wasmtime --features gc-elise --lib elise::        # its type table
-python3 kun/elise_tests.py                                      # upstream's GC tests, with elise
+python3 machopo/elise_tests.py                                      # upstream's GC tests, with elise
 cargo test -p wasmtime-fuzzing --no-default-features --features gc-elise --lib -- \
     gc_ops_with_elise gc_ops_elise_agrees                       # fixed-seed fuzzing
 ```
 
-`kun/elise_tests.py` runs the modules whose tests take their engine from
+`machopo/elise_tests.py` runs the modules whose tests take their engine from
 `gc_engine()` or `gc_store()` (`structs`, `arrays`, `gc`, `exnrefs`,
 `eqref`), and the spec tests of GC types, with
 `WASMTIME_TEST_COLLECTOR=elise` and `elise-stress`, and fails if a test not
-in `kun/elise-expected-failures.txt` fails, or one in it passes. The list
+in `machopo/elise-expected-failures.txt` fails, or one in it passes. The list
 is empty now.
 
 The spec tests and `crates/fuzzing`'s build script need the

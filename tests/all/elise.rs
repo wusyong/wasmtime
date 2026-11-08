@@ -1,4 +1,4 @@
-//! kun: elise, kun's GC, as the collector, through the host's API: GC types
+//! machopo: elise, machopo's GC, as the collector, through the host's API: GC types
 //! registered and let go with the engine's, objects laid out and read and
 //! written as their types say (`i31ref`s, GC references, `externref`s'
 //! host data), a pooling allocator's heap given to the next store afresh,

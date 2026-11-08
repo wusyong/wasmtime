@@ -18,7 +18,7 @@ pub mod null;
 #[cfg(feature = "gc-copying")]
 pub mod copying;
 
-// kun: elise, kun's GC.
+// machopo: elise, machopo's GC.
 #[cfg(feature = "gc-elise")]
 pub mod elise;
 

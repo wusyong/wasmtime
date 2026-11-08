@@ -1,4 +1,4 @@
-//! kun: elise, kun's GC, as a collector.
+//! machopo: elise, machopo's GC, as a collector.
 //!
 //! elise's heap is its own 4 GiB cage (`EngineHeap`), and the GC heap: the
 //! memory Wasmtime gives a heap is only held, and given back. A `VMGcRef`
@@ -24,7 +24,7 @@
 //! back.
 //!
 //! A heap may instead be an embedder's, borrowed (`Config::elise_heap_provider`):
-//! kun's DOM's, whose wasm GC objects live beside its nodes. Its stores are a
+//! machopo's DOM's, whose wasm GC objects live beside its nodes. Its stores are a
 //! `StoreSet`'s, which gives elise their roots at every GC (`SetSource`), and
 //! counts their frames while it lends them. They stay on the heap's thread:
 //! each use checks it, and that the heap still lives.
@@ -303,8 +303,8 @@ pub fn elise_remember(heap: &mut dyn GcHeap, slot: u32, value: u32) -> Result<()
     heap.bits(|bits| unsafe { bits.remember(slot, value) })
 }
 
-/// kun: an embedder's heap of elise's that stores borrow
-/// (`Config::elise_heap_provider`), kun's DOM's: a thread's, found by a
+/// machopo: an embedder's heap of elise's that stores borrow
+/// (`Config::elise_heap_provider`), machopo's DOM's: a thread's, found by a
 /// key, as Blink finds cppgc's heap through its thread's `ThreadState`.
 ///
 /// It is trusted with nothing: a store checks that what it lends is the
@@ -1038,7 +1038,7 @@ unsafe impl GcHeap for EliseHeap {
         // workers too. Those references are written only through
         // `write_gc_ref_in` and `init_gc_ref_in` (elise's `write_bits`, also
         // atomic); the runtime writes the other bytes, which the marker
-        // doesn't read (README.kun.md, "Writes alongside elise's marker").
+        // doesn't read (README.machopo.md, "Writes alongside elise's marker").
         Ok(unsafe { VMGcObjectData::from_raw_parts(data, size) })
     }
 }

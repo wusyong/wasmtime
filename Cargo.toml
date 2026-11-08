@@ -602,7 +602,7 @@ gc = ["wasmtime-cli-flags/gc", "wasmtime/gc"]
 gc-drc = ["gc", "wasmtime/gc-drc", "wasmtime-cli-flags/gc-drc"]
 gc-null = ["gc", "wasmtime/gc-null", "wasmtime-cli-flags/gc-null"]
 gc-copying = ["gc", "wasmtime/gc-copying", "wasmtime-cli-flags/gc-copying"]
-# kun: the tests run with elise as the collector (`WASMTIME_TEST_COLLECTOR`).
+# machopo: the tests run with elise as the collector (`WASMTIME_TEST_COLLECTOR`).
 gc-elise = ["gc", "wasmtime/gc-elise"]
 pulley = ["wasmtime-cli-flags/pulley"]
 stack-switching = ["wasmtime/stack-switching", "wasmtime-cli-flags/stack-switching"]
