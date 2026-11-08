@@ -5,12 +5,15 @@
 //! lent, nor the embedder's while any is; a store with no GC heap runs the
 //! set's heap's; a store outside a set gets no GC
 //! heap, one off the heap's thread or after the heap is replaced fails, and
-//! a heap takes one set's source only.
+//! a heap takes one set's source only. A marking of the heap a few objects
+//! at a time keeps what two stores' compiled code moves meanwhile, and the
+//! SATB barrier what compiled code cut from an object the marker hadn't
+//! reached.
 
 use std::cell::RefCell;
 use std::sync::Arc;
 use wasmtime::elise::raw::{self, ArrayLayout, Layout, TypeRange};
-use wasmtime::elise::{Heap, HeapOptions};
+use wasmtime::elise::{Heap, HeapOptions, Job, JobDelegate, JobHandle, Platform};
 use wasmtime::*;
 
 thread_local! {
@@ -50,6 +53,11 @@ fn lend(key: u64) {
         ..HeapOptions::default()
     });
     DOM.set(Some((key, heap)));
+}
+
+/// `lend`, with `options` and `platform`.
+fn lend_with(key: u64, options: HeapOptions, platform: Arc<dyn Platform>) {
+    DOM.set(Some((key, Heap::with_platform(options, platform))));
 }
 
 fn dom<R>(f: impl FnOnce(&mut Heap) -> R) -> R {
@@ -382,4 +390,370 @@ fn engine_of_new() -> Result<Engine> {
     let engine = engine()?;
     ENGINE.set(Some(engine.clone()));
     Ok(engine)
+}
+
+const SLOTS_WAT: &str = r#"
+    (module
+        (type $s (struct (field (mut i64)) (field (mut anyref))))
+        (type $a (array (mut anyref)))
+        (global $slots (mut (ref null $a)) (ref.null $a))
+        (global $ballast (mut anyref) (ref.null any))
+        (func (export "init") (param $n i32)
+            (global.set $slots (array.new $a (ref.null any) (i32.const 8)))
+            ;; `n` structs in a list, live: a marking of them takes steps.
+            (block $done
+                (loop $more
+                    (br_if $done (i32.eqz (local.get $n)))
+                    (global.set $ballast
+                        (struct.new $s (i64.const 0) (global.get $ballast)))
+                    (local.set $n (i32.sub (local.get $n) (i32.const 1)))
+                    (br $more))))
+        (func $at (param $i i32) (result (ref $s))
+            (ref.cast (ref $s) (array.get $a (global.get $slots) (local.get $i))))
+        ;; A new struct (a GC first, under stress) into slot `i`.
+        (func (export "put") (param $i i32) (param $v i64)
+            (array.set $a (global.get $slots) (local.get $i)
+                (struct.new $s (local.get $v) (ref.null any))))
+        ;; Slot `i`'s to slot `j`, `i` cleared.
+        (func (export "move") (param $i i32) (param $j i32)
+            (local $v anyref)
+            (local.set $v (array.get $a (global.get $slots) (local.get $i)))
+            (array.set $a (global.get $slots) (local.get $i) (ref.null any))
+            (array.set $a (global.get $slots) (local.get $j) (local.get $v)))
+        ;; Slot `j`'s hung on slot `i`'s second field, `j` cleared.
+        (func (export "hang") (param $i i32) (param $j i32)
+            (struct.set $s 1 (call $at (local.get $i))
+                (array.get $a (global.get $slots) (local.get $j)))
+            (array.set $a (global.get $slots) (local.get $j) (ref.null any)))
+        ;; What slot `i`'s struct hangs into slot `j`, cut from it: the array
+        ;; may be scanned, and the struct not yet (SATB keeps it).
+        (func (export "unhang") (param $i i32) (param $j i32)
+            (local $v anyref)
+            (local.set $v (struct.get $s 1 (call $at (local.get $i))))
+            (array.set $a (global.get $slots) (local.get $j) (local.get $v))
+            (struct.set $s 1 (call $at (local.get $i)) (ref.null any)))
+        ;; Slot `i`'s value, -1 for none; with `hung`, its hung struct's.
+        (func (export "value") (param $i i32) (param $hung i32) (result i64)
+            (local $v anyref)
+            (local.set $v (array.get $a (global.get $slots) (local.get $i)))
+            (if (local.get $hung)
+                (then (local.set $v
+                    (struct.get $s 1 (ref.cast (ref $s) (local.get $v))))))
+            (if (result i64) (ref.is_null (local.get $v))
+                (then (i64.const -1))
+                (else (struct.get $s 0 (ref.cast (ref $s) (local.get $v))))))
+    )
+"#;
+
+/// A struct as the model has it: its value, and what it hangs.
+#[derive(Clone)]
+struct Node {
+    value: i64,
+    hung: Option<Box<Node>>,
+}
+
+/// A store of `SLOTS_WAT`, and what its slots hold.
+struct Slots {
+    index: usize,
+    instance: Instance,
+    model: [Option<Node>; 8],
+}
+
+impl Slots {
+    fn new(set: &mut StoreSet<()>, ballast: i32) -> Result<Self> {
+        let engine = engine_of(set)?;
+        let module = Module::new(&engine, SLOTS_WAT)?;
+        let index = set.insert(Store::new(&engine, ()))?;
+        let instance = set.with(index, |mut cx| -> Result<Instance> {
+            let instance = Instance::new(&mut cx, &module, &[])?;
+            let init = instance.get_typed_func::<i32, ()>(&mut cx, "init")?;
+            init.call(&mut cx, ballast)?;
+            Ok(instance)
+        })??;
+        Ok(Self {
+            index,
+            instance,
+            model: Default::default(),
+        })
+    }
+
+    fn call<P: WasmParams, R: WasmResults>(
+        &self,
+        set: &StoreSet<()>,
+        name: &str,
+        params: P,
+    ) -> Result<R> {
+        let instance = self.instance;
+        set.with(self.index, |mut cx| {
+            instance
+                .get_typed_func::<P, R>(&mut cx, name)?
+                .call(&mut cx, params)
+        })?
+    }
+
+    /// Every slot, and what it hangs, read by compiled code, as the model
+    /// says.
+    fn check(&self, set: &StoreSet<()>, round: i64) -> Result<()> {
+        for (i, slot) in self.model.iter().enumerate() {
+            let at = i32::try_from(i)?;
+            let value: i64 = self.call(set, "value", (at, 0))?;
+            assert_eq!(
+                value,
+                slot.as_ref().map_or(-1, |n| n.value),
+                "round {round}, slot {i}"
+            );
+            if let Some(node) = slot {
+                let value: i64 = self.call(set, "value", (at, 1))?;
+                let hung = node.hung.as_ref().map_or(-1, |n| n.value);
+                assert_eq!(value, hung, "round {round}, slot {i}'s hung");
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A platform whose posted jobs (a marking's) run only in `step`, each run
+/// asked to yield (after 64 objects, a marking's).
+#[derive(Default)]
+struct Yielding {
+    posted: std::sync::Mutex<Vec<(usize, Arc<dyn Job + Send>)>>,
+    next: std::sync::Mutex<usize>,
+    ran: std::sync::atomic::AtomicUsize,
+}
+
+impl Yielding {
+    fn step(&self) {
+        let jobs: Vec<_> = self
+            .posted
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(_, job)| job.clone())
+            .collect();
+        for job in jobs {
+            job.run(&YieldingWorker);
+            self.ran.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+}
+
+struct YieldingWorker;
+
+impl JobDelegate for YieldingWorker {
+    fn notify_concurrency_increase(&self) {}
+
+    fn is_joining_thread(&self) -> bool {
+        false
+    }
+
+    fn should_yield(&self) -> bool {
+        true
+    }
+}
+
+struct YieldingHandle(Arc<Yielding>, usize);
+
+impl JobHandle for YieldingHandle {
+    fn notify_concurrency_increase(&self) {}
+
+    fn cancel(&self) {
+        self.0
+            .posted
+            .lock()
+            .unwrap()
+            .retain(|&(id, _)| id != self.1);
+    }
+}
+
+struct YieldingSteps(Arc<Yielding>);
+
+impl Platform for YieldingSteps {
+    fn run(&self, job: &dyn Job) {
+        wasmtime::elise::InlinePlatform.run(job);
+    }
+
+    fn post_job(&self, job: Arc<dyn Job + Send>) -> Option<Box<dyn JobHandle>> {
+        let mut next = self.0.next.lock().unwrap();
+        *next += 1;
+        self.0.posted.lock().unwrap().push((*next, job));
+        Some(Box::new(YieldingHandle(self.0.clone(), *next)))
+    }
+
+    fn posts_jobs(&self) -> bool {
+        true
+    }
+}
+
+/// A marking of the shared heap a few objects at a time: two stores'
+/// compiled code moves objects between slots, hangs them on each other and
+/// takes them back (`array.set`, `struct.set`, the slots in a global), and
+/// the embedder allocates; under stress each allocation GCs (a scavenge, a
+/// marking's start or end), the marker running a step (64 objects) between
+/// each. What each store holds is read back as its model says: the
+/// barriers on the DOM's heap (SATB, the generational one) keep what the
+/// marker hadn't reached.
+#[test]
+fn a_marking_of_the_shared_heap_steps_between_compiled_writes() -> Result<()> {
+    let steps = Arc::new(Yielding::default());
+    lend_with(
+        11,
+        HeapOptions {
+            stress: true,
+            verify: true,
+            ..HeapOptions::default()
+        },
+        Arc::new(YieldingSteps(steps.clone())),
+    );
+    let mut set = set()?;
+    let mut stores = [Slots::new(&mut set, 300)?, Slots::new(&mut set, 300)?];
+    let mut seed = 7_u64;
+    let mut random = |n: u64| {
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (seed >> 33) % n
+    };
+    for round in 0..600_i64 {
+        let which = random(5);
+        if which == 4 {
+            embedders_garbage(1);
+        } else {
+            let store = &mut stores[usize::try_from(which % 2)?];
+            let (i, j) = (random(8), random(8));
+            let (i_at, j_at) = (usize::try_from(i)?, usize::try_from(j)?);
+            let (i, j) = (i32::try_from(i)?, i32::try_from(j)?);
+            match random(4) {
+                0 => {
+                    store.call::<_, ()>(&set, "put", (i, round))?;
+                    store.model[i_at] = Some(Node {
+                        value: round,
+                        hung: None,
+                    });
+                }
+                1 if i != j => {
+                    store.call::<_, ()>(&set, "move", (i, j))?;
+                    store.model[j_at] = store.model[i_at].take();
+                }
+                2 if i != j && store.model[i_at].is_some() => {
+                    store.call::<_, ()>(&set, "hang", (i, j))?;
+                    let hung = store.model[j_at].take().map(Box::new);
+                    store.model[i_at].as_mut().unwrap().hung = hung;
+                }
+                3 if i != j && store.model[i_at].is_some() => {
+                    store.call::<_, ()>(&set, "unhang", (i, j))?;
+                    let hung = store.model[i_at].as_mut().unwrap().hung.take();
+                    store.model[j_at] = hung.map(|node| *node);
+                }
+                _ => {}
+            }
+        }
+        steps.step();
+        for store in &stores {
+            store.check(&set, round)?;
+        }
+    }
+    assert!(
+        steps.ran.load(std::sync::atomic::Ordering::SeqCst) > 0,
+        "a marking ran a step"
+    );
+    assert!(dom(|heap| heap.stats()).concurrent_markings > 0);
+    drop(set);
+    DOM.set(None);
+    Ok(())
+}
+
+const CUT_WAT: &str = r#"
+    (module
+        (type $s (struct (field (mut i64)) (field (mut anyref))))
+        (global $list (mut anyref) (ref.null any))
+        (global $keep (mut anyref) (ref.null any))
+        ;; `n` structs (value 0) in a list, its last `P` (1) hanging `H` (42):
+        ;; a marking reaches `P` last.
+        (func (export "init") (param $n i32)
+            (global.set $list
+                (struct.new $s (i64.const 1) (struct.new $s (i64.const 42) (ref.null any))))
+            (block $done
+                (loop $more
+                    (br_if $done (i32.eqz (local.get $n)))
+                    (global.set $list (struct.new $s (i64.const 0) (global.get $list)))
+                    (local.set $n (i32.sub (local.get $n) (i32.const 1)))
+                    (br $more))))
+        ;; `H` into a global (a root: no barrier), cut from `P`.
+        (func (export "cut")
+            (local $node (ref $s))
+            (local.set $node (ref.cast (ref $s) (global.get $list)))
+            (block $found
+                (loop $next
+                    (br_if $found (i64.eq (struct.get $s 0 (local.get $node)) (i64.const 1)))
+                    (local.set $node
+                        (ref.cast (ref $s) (struct.get $s 1 (local.get $node))))
+                    (br $next)))
+            (global.set $keep (struct.get $s 1 (local.get $node)))
+            (struct.set $s 1 (local.get $node) (ref.null any)))
+        (func (export "kept") (result i64)
+            (struct.get $s 0 (ref.cast (ref $s) (global.get $keep))))
+    )
+"#;
+
+/// Compiled code cuts an edge as a marking of the shared heap starts,
+/// before the marker reached it, the object it held put in a global: the
+/// marking's end reads no root (SATB's snapshot was taken), so only the
+/// SATB barrier on the cut (`struct.set`) keeps the object.
+#[test]
+fn the_satb_barrier_on_the_shared_heap_keeps_what_compiled_code_cut() -> Result<()> {
+    let steps = Arc::new(Yielding::default());
+    lend_with(
+        12,
+        HeapOptions {
+            stress: true,
+            verify: true,
+            ..HeapOptions::default()
+        },
+        Arc::new(YieldingSteps(steps.clone())),
+    );
+    let mut set = set()?;
+    let engine = engine_of(&set)?;
+    let module = Module::new(&engine, CUT_WAT)?;
+    let index = set.insert(Store::new(&engine, ()))?;
+    let instance = set.with(index, |mut cx| -> Result<Instance> {
+        let instance = Instance::new(&mut cx, &module, &[])?;
+        instance
+            .get_typed_func::<i32, ()>(&mut cx, "init")?
+            .call(&mut cx, 300)?;
+        Ok(instance)
+    })??;
+    let call = |name: &str| -> Result<()> {
+        set.with(index, |mut cx| {
+            instance
+                .get_typed_func::<(), ()>(&mut cx, name)?
+                .call(&mut cx, ())
+        })?
+    };
+    // The embedder's safepoints GC (under stress, each); none runs in a
+    // store's call that allocates nothing.
+    for _ in 0..20 {
+        if dom(|heap| heap.is_marking()) {
+            break;
+        }
+        embedders_garbage(1);
+    }
+    assert!(dom(|heap| heap.is_marking()), "a marking started");
+    call("cut")?;
+    for _ in 0..20 {
+        if !dom(|heap| heap.is_marking()) {
+            break;
+        }
+        steps.step();
+        embedders_garbage(1);
+    }
+    assert!(!dom(|heap| heap.is_marking()), "the marking ended");
+    let kept = set.with(index, |mut cx| {
+        instance
+            .get_typed_func::<(), i64>(&mut cx, "kept")?
+            .call(&mut cx, ())
+    })??;
+    assert_eq!(kept, 42);
+    drop(set);
+    DOM.set(None);
+    Ok(())
 }
