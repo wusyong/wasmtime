@@ -145,6 +145,7 @@ impl HeapData {
         &self,
         tunables: &'a wasmtime_environ::Tunables,
     ) -> wasmtime_environ::MemoryTunables<'a> {
-        wasmtime_environ::MemoryTunables::new(tunables, self.kind)
+        // machopo: as compiled code sees it (elise's cage for its GC heap).
+        wasmtime_environ::MemoryTunables::for_compiled_code(tunables, self.kind)
     }
 }

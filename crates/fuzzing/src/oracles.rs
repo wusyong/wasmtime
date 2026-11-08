@@ -716,6 +716,44 @@ pub enum GcOpsOutcome {
     Trap(Trap),
 }
 
+/// machopo: the `gc_ops_elise` fuzz target's case: `gc_ops` with elise as
+/// the collector and the GC proposals on (most arbitrary configs leave them
+/// off, and the case's module doesn't compile), GCing as usual or at every
+/// allocation (`seed & 2`), natively or on Pulley (`seed & 1`). It passes
+/// `gc_ops`'s checks (each `externref`'s host data given back, the traps it
+/// allows, elise's heap checks after each GC), and ends as the copying
+/// collector's run of it does, unless either ran out of memory.
+#[cfg(feature = "gc-elise")]
+pub fn gc_ops_elise(mut config: generators::Config, seed: u64, ops: GcOps) {
+    let module = &mut config.module_config;
+    module.config.gc_enabled = true;
+    module.config.reference_types_enabled = true;
+    module.config.multi_value_enabled = true;
+    module.config.simd_enabled = true;
+    module.function_references_enabled = true;
+    config.wasmtime.strategy = generators::InstanceAllocationStrategy::OnDemand;
+    config.wasmtime.compiler_strategy = if seed & 1 == 0 {
+        CompilerStrategy::CraneliftNative
+    } else {
+        CompilerStrategy::CraneliftPulley
+    };
+    config.wasmtime.use_elise(seed & 2 != 0);
+
+    let mut copying = config.clone();
+    copying.wasmtime.use_copying();
+    let elise = gc_ops_outcome(config, ops.clone()).unwrap();
+    // Its heap may be too small for the case's `externref` arguments.
+    let copying = match gc_ops_outcome(copying, ops) {
+        Err(e) if format!("{e}").starts_with("GC heap out of memory") => return,
+        result => result.unwrap(),
+    };
+    let oom = |o: &(usize, GcOpsOutcome)| o.1 == GcOpsOutcome::OutOfMemory;
+    if oom(&elise) || oom(&copying) || elise.1 == GcOpsOutcome::NotCompiled {
+        return;
+    }
+    assert_eq!(elise, copying);
+}
+
 /// machopo: `gc_ops`, telling how the test case ended too.
 pub fn gc_ops_outcome(
     mut fuzz_config: generators::Config,
@@ -1410,6 +1448,35 @@ mod tests {
             compared > ELISE_GC_OPS_SEEDS as usize / 2,
             "only {compared} compared"
         );
+    }
+
+    // machopo: the `gc_ops_elise` fuzz target's crashes, replayed as it
+    // decodes them. 2026-11-09: a GC heap whose tunables reserve 0 bytes and
+    // don't let it move had compiled code bounds-check against that
+    // reservation, and take an array of elise's cage past it for a corrupt
+    // heap.
+    #[test]
+    #[cfg(feature = "gc-elise")]
+    fn gc_ops_elise_regressions() {
+        use rand::{RngExt, SeedableRng};
+        if std::env::var("WASMTIME_TEST_NO_HOG_MEMORY").is_ok() {
+            return;
+        }
+        let crashes: &[&[u8]] = &[&[
+            0x98, 0xe0, 0xa0, 0xdb, 0x88, 0x87, 0xcd, 0x80, 0x2d, 0x5, 0x3, 0x5, 0x4, 0x16, 0x5,
+            0x2, 0x1, 0x4d, 0xab, 0xc6, 0x9e, 0xd4, 0xf, 0xb9, 0xe8, 0xca, 0xd2, 0x5, 0x1, 0x9e,
+            0xa2, 0xdb, 0x25, 0x1, 0xc9, 0xf6, 0x81, 0xcf, 0xb, 0x1, 0xc9, 0xf6, 0x81, 0xcf, 0xb,
+            0x0, 0x0, 0x1, 0xb, 0x0, 0xf9, 0xe2, 0x9c, 0xb9, 0x4, 0x1,
+        ]];
+        for data in crashes {
+            let (seed, ops): (u64, GcOps) = postcard::from_bytes(data).unwrap();
+            let mut buf = [0u8; 1024];
+            rand::rngs::StdRng::seed_from_u64(seed).fill(&mut buf);
+            let config =
+                generators::Config::arbitrary_take_rest(arbitrary::Unstructured::new(&buf))
+                    .unwrap();
+            gc_ops_elise(config, seed, ops);
+        }
     }
 
     // Test that the `gc_ops` fuzzer eventually runs the gc function in the host.

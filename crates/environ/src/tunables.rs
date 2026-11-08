@@ -387,16 +387,43 @@ pub enum MemoryKind {
 pub struct MemoryTunables<'a> {
     tunables: &'a Tunables,
     kind: MemoryKind,
+    /// machopo: an elise GC heap, as compiled code sees it
+    /// (`MemoryTunables::for_compiled_code`).
+    elise_gc_heap: bool,
 }
 
 impl<'a> MemoryTunables<'a> {
     /// Create a new `MemoryTunables` view.
     pub fn new(tunables: &'a Tunables, kind: MemoryKind) -> Self {
-        Self { tunables, kind }
+        Self {
+            tunables,
+            kind,
+            elise_gc_heap: false,
+        }
+    }
+
+    /// machopo: the view compiled code bounds-checks `kind`'s accesses by.
+    /// Elise's GC heap is its own 4 GiB cage, whatever the GC heap's tunables
+    /// say: they size only the memory Wasmtime allocates, which elise leaves
+    /// unused. A small reservation that can't move would make compiled code
+    /// check against that reservation, and take an object past it for a
+    /// corrupt heap; so it sees the 64-bit defaults instead (a 4 GiB
+    /// reservation and a 32 MiB guard, its checks elided), what it sees
+    /// unconfigured.
+    pub fn for_compiled_code(tunables: &'a Tunables, kind: MemoryKind) -> Self {
+        Self {
+            tunables,
+            kind,
+            elise_gc_heap: kind == MemoryKind::GcHeap
+                && tunables.collector == Some(Collector::Elise),
+        }
     }
 
     /// The virtual memory reservation for this kind of memory.
     pub fn reservation(&self) -> u64 {
+        if self.elise_gc_heap {
+            return 1 << 32;
+        }
         match self.kind {
             MemoryKind::LinearMemory => self.tunables.memory_reservation,
             MemoryKind::GcHeap => self.tunables.gc_heap_reservation,
@@ -405,6 +432,9 @@ impl<'a> MemoryTunables<'a> {
 
     /// The size of the guard page region for this kind of memory.
     pub fn guard_size(&self) -> u64 {
+        if self.elise_gc_heap {
+            return 32 << 20;
+        }
         match self.kind {
             MemoryKind::LinearMemory => self.tunables.memory_guard_size,
             MemoryKind::GcHeap => self.tunables.gc_heap_guard_size,
@@ -414,6 +444,9 @@ impl<'a> MemoryTunables<'a> {
     /// Extra virtual memory to reserve beyond the initially mapped pages for
     /// this kind of memory.
     pub fn reservation_for_growth(&self) -> u64 {
+        if self.elise_gc_heap {
+            return 2 << 30;
+        }
         match self.kind {
             MemoryKind::LinearMemory => self.tunables.memory_reservation_for_growth,
             MemoryKind::GcHeap => self.tunables.gc_heap_reservation_for_growth,
@@ -422,6 +455,9 @@ impl<'a> MemoryTunables<'a> {
 
     /// Whether this kind of memory's base pointer may be relocated at runtime.
     pub fn may_move(&self) -> bool {
+        if self.elise_gc_heap {
+            return true;
+        }
         match self.kind {
             MemoryKind::LinearMemory => self.tunables.memory_may_move,
             MemoryKind::GcHeap => self.tunables.gc_heap_may_move,

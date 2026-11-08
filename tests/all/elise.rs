@@ -1280,3 +1280,36 @@ fn compiled_code_allocates_an_array_of_its_length() -> Result<()> {
     assert_eq!(length.call(&mut store, len)?, len);
     Ok(())
 }
+
+/// A GC heap's tunables size only the memory Wasmtime allocates, which
+/// elise leaves unused: a small reservation that can't move doesn't bound
+/// compiled code's accesses to elise's heap (checked against that
+/// reservation, an array past it looked like a corrupt heap).
+#[test]
+fn a_gc_heaps_tunables_dont_bound_elises_heap() -> Result<()> {
+    let mut config = Config::new();
+    config.gc_heap_reservation(0);
+    config.gc_heap_reservation_for_growth(1 << 20);
+    config.gc_heap_may_move(false);
+    let engine = engine(&mut config)?;
+    let module = Module::new(
+        &engine,
+        r#"
+        (module
+          (type $a (array (mut (ref null $a))))
+          (func (export "run") (param $n i32)
+            (local $x (ref null $a))
+            (block $done
+              (loop $more
+                (br_if $done (i32.eqz (local.get $n)))
+                (local.set $x (array.new_default $a (i32.const 2)))
+                (drop (array.get $a (local.get $x) (i32.const 1)))
+                (local.set $n (i32.sub (local.get $n) (i32.const 1)))
+                (br $more)))))
+        "#,
+    )?;
+    let mut store = Store::new(&engine, ());
+    let instance = Instance::new(&mut store, &module, &[])?;
+    let run = instance.get_typed_func::<i32, ()>(&mut store, "run")?;
+    run.call(&mut store, 100_000)
+}

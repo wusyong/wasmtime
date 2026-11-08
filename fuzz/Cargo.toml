@@ -55,6 +55,8 @@ chaos = ["cranelift-control/chaos"]
 # Check the x64 assembler against Intel XED in the `misc` fuzzer. Off by default
 # because XED is built from source, which requires a C compiler and Python.
 fuzz-xed = ["cranelift-assembler-x64/fuzz-xed"]
+# machopo: elise, machopo's GC, as a collector (`gc_ops_elise`).
+gc-elise = ['wasmtime-fuzzing/gc-elise']
 
 [[bin]]
 name = "compile"
@@ -130,6 +132,15 @@ path = "fuzz_targets/gc_ops.rs"
 test = false
 doc = false
 bench = false
+
+# machopo: `gc_ops` with elise.
+[[bin]]
+name = "gc_ops_elise"
+path = "fuzz_targets/gc_ops_elise.rs"
+test = false
+doc = false
+bench = false
+required-features = ["gc-elise"]
 
 [[bin]]
 name = "oom"

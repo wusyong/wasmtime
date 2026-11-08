@@ -597,9 +597,8 @@ pub fn write_field_at_addr(
             }
             // machopo: a field's, told from a root's.
             WasmHeapTopType::Extern | WasmHeapTopType::Any | WasmHeapTopType::Exn => {
-                gc_compiler(func_env)?.translate_write_gc_field(
-                    func_env, builder, r, field_addr, new_val, flags,
-                )?;
+                gc_compiler(func_env)?
+                    .translate_write_gc_field(func_env, builder, r, field_addr, new_val, flags)?;
             }
             WasmHeapTopType::Cont => {
                 write_cont_ref_at_addr(func_env, builder, r, flags, field_addr, new_val)
@@ -1705,8 +1704,9 @@ impl FuncEnvironment<'_> {
         builder: &mut FunctionBuilder,
     ) -> WasmResult<ir::Value> {
         let mut flags = ir::MemFlagsData::trusted();
+        // machopo: as compiled code sees it (elise's cage).
         let memory_tunables =
-            wasmtime_environ::MemoryTunables::new(self.tunables, MemoryKind::GcHeap);
+            wasmtime_environ::MemoryTunables::for_compiled_code(self.tunables, MemoryKind::GcHeap);
 
         // If the memory cannot move (i.e. its base pointer cannot change across
         // calls) then the base pointer is readonly and this load instruction
@@ -1753,8 +1753,9 @@ impl FuncEnvironment<'_> {
 
         // The base pointer's load is `can_move` and `readonly` when the GC
         // heap's base can never move.
+        // machopo: as compiled code sees it (elise's cage).
         let memory_tunables =
-            wasmtime_environ::MemoryTunables::new(self.tunables, MemoryKind::GcHeap);
+            wasmtime_environ::MemoryTunables::for_compiled_code(self.tunables, MemoryKind::GcHeap);
         let mut base_flags = ir::MemFlagsData::trusted();
         if !self
             .tunables

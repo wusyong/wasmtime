@@ -68,7 +68,10 @@ v8 = { version = "139.0.0", optional = true }
 
 [dev-dependencies]
 wat = { workspace = true }
-rand = { workspace = true }
+# machopo: `std_rng` and postcard, to replay `gc_ops_elise`'s crashes as the
+# fuzz target decodes them.
+rand = { workspace = true, features = ['std_rng'] }
+postcard = { workspace = true }
 wasmtime-environ = { workspace = true }
 cranelift-bforest = { workspace = true }
 cranelift-bitset = { workspace = true }

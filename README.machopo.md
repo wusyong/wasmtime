@@ -43,6 +43,17 @@ from outside; the collectors are modules of the `wasmtime` crate.
   in it, the bits elise's edges hold, and an `i31ref` is encoded as elise's
   `I31` is. Most of the cage is reserved, not committed, so no slice of all
   of it is made: the heap reads and writes an object at a time.
+- The GC heap's tunables (`gc_heap_reservation`, `gc_heap_guard_size`,
+  `gc_heap_reservation_for_growth`, `gc_heap_may_move`) size only the memory
+  Wasmtime allocates and elise leaves unused: compiled code bounds-checks
+  elise's heap as for the 64-bit defaults, a 4 GiB reservation and a 32 MiB
+  guard (`MemoryTunables::for_compiled_code`), so its checks are elided. A
+  small reservation that can't move would have it check against that
+  reservation, and take an object past it for a corrupt heap. Two costs of
+  this remain: Wasmtime still reserves the unused memory's address space per
+  store (4 GiB and its guard, by default), and elise's cage has no guard
+  region after it, which the elided checks count on should a reference be
+  corrupt (one that is valid always points inside the cage).
 - The data of an object starts with its `VMGcHeader`, after elise's own
   header (`crates/environ/src/gc/elise.rs`): 8 bytes more per object than
   one header would take.
@@ -177,9 +188,13 @@ Each is marked with a `machopo:` comment.
   layouts and barrier state's offsets (`src/gc/elise.rs`); the builtins
   `elise_satb` and `elise_remember`, and `gc_alloc_raw` for elise too
   (`src/builtin.rs`).
+- `crates/environ/src/tunables.rs`: `MemoryTunables::for_compiled_code`,
+  elise's GC heap as compiled code sees it.
 - `crates/cranelift`:
   - `src/func_environ/gc.rs`: `GcCompiler::translate_write_gc_field`,
-    which `write_field_at_addr` calls; elise's compiler.
+    which `write_field_at_addr` calls; elise's compiler. The GC heap's
+    tunables through `MemoryTunables::for_compiled_code` (and
+    `src/translate/heap.rs`'s bounds checks).
   - `src/func_environ/gc/elise.rs` (new): elise's compiler.
   - `src/alias_region.rs`: alias regions for elise's barrier state and
     young pages' flags.
@@ -233,10 +248,13 @@ Each is marked with a `machopo:` comment.
   `crates/test-macros`: the collector's name.
 - `crates/fuzzing`: the feature `gc-elise`, which fuzz configs can choose
   elise with (checking its heap after each GC, and stressed or not);
-  `oracles::gc_ops_outcome`, how a `gc_ops` case ended; tests of `gc_ops`
+  `oracles::gc_ops_outcome`, how a `gc_ops` case ended, and
+  `oracles::gc_ops_elise`, the `gc_ops_elise` fuzz target's case (its
+  crashes replayed in `gc_ops_elise_regressions`); tests of `gc_ops`
   with elise for fixed seeds, and comparing elise's runs with the copying
   collector's.
 - `machopo/`: running upstream's GC tests with elise.
+- `fuzz/`: the feature `gc-elise` and the `gc_ops_elise` target.
 
 ## Tests
 
@@ -249,6 +267,9 @@ cargo test -p wasmtime --features gc-elise --lib elise::        # its type table
 python3 machopo/elise_tests.py                                      # upstream's GC tests, with elise
 cargo test -p wasmtime-fuzzing --no-default-features --features gc-elise --lib -- \
     gc_ops_with_elise gc_ops_elise_agrees                       # fixed-seed fuzzing
+cargo +nightly fuzz run gc_ops_elise --target x86_64-unknown-linux-gnu \
+    --no-default-features --features gc-elise -- -max_total_time=3600
+                                                                 # cargo-fuzz, an hour
 ```
 
 `machopo/elise_tests.py` runs the modules whose tests take their engine from
@@ -265,8 +286,15 @@ without them, an empty directory `test` in `tests/component-model` lets
 them run `tests/misc_testsuite` alone. `crates/fuzzing`'s default feature `v8`
 downloads a prebuilt V8, hence `--no-default-features`.
 
-The fixed-seed tests are what fuzzing elise is for now: cargo-fuzz (and
-Miri over the fork) wait for a macOS or Linux machine.
+`fuzz/fuzz_targets/gc_ops_elise.rs` is upstream's `gc_ops` with elise as the
+collector and the GC proposals on (most arbitrary configs leave them off),
+GCing as usual or at every allocation, natively or on Pulley; each case
+also ends as the copying collector's run of it does. The fixed-seed tests
+run the same checks in `cargo test`. `--target` is this machine's (a
+prebuilt cargo-fuzz is musl's, which ASan can't link); `fuzz`'s default
+features download V8 and need OCaml, hence `--no-default-features`. Miri
+over the fork, and the fuzzer, need the nightly to have the `wasm32-wasip1`
+and `wasm32-unknown-unknown` targets too (the test programs).
 
 The test programs (`crates/test-programs`) need the `wasm32-wasip1` and
 `wasm32-unknown-unknown` targets.

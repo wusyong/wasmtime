@@ -5103,6 +5103,7 @@ dependencies = [
  "futures",
  "log",
  "mutatis",
+ "postcard",
  "rand 0.10.1",
  "rayon",
  "serde",
