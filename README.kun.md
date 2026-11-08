@@ -6,7 +6,7 @@
 | Fork | https://github.com/wusyong/wasmtime (remote `origin`) |
 | Branch | `kun`, from upstream's tag `v50.0.1` (`c307ec81de`); the fork's `main` is upstream's, untouched |
 | License | Apache-2.0 WITH LLVM-exception (`LICENSE`) |
-| Used by | nothing of kun's yet: it is built and tested here, with elise beside it (`../elise`, by path) |
+| Used by | kun's `dom_wasm` (by path, version pinned), with `gc-elise` on and the default collector: kun doesn't choose elise yet. Elise is beside it (`../elise`, by path), the one kun builds too |
 
 ## Why a fork
 
