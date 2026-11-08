@@ -23,6 +23,12 @@
 //! of elise's: after a GC, those whose object died give their host data
 //! back.
 //!
+//! A heap may instead be an embedder's, borrowed (`Config::elise_heap_provider`):
+//! kun's DOM's, whose wasm GC objects live beside its nodes. Its stores are a
+//! `StoreSet`'s, which gives elise their roots at every GC (`SetSource`), and
+//! counts their frames while it lends them. They stay on the heap's thread:
+//! each use checks it, and that the heap still lives.
+//!
 //! Compiled code reaches the heap through elise's barrier state
 //! (`vmctx_gc_heap_data`): its write barriers read it inline, and call
 //! `elise_satb` and `elise_remember` when they must
@@ -38,14 +44,16 @@ use crate::{
     },
 };
 use ::elise::raw::{
-    AllocError, ArrayLayout, CAGE_BYTES, EngineHeap, Layout as EliseLayout, RegisterError,
-    TypeRange,
+    self as raw, AllocError, ArrayLayout, CAGE_BYTES, EngineHeap, HeapAlive, Layout as EliseLayout,
+    RegisterError, TypeRange,
 };
-use ::elise::{HeapOptions, Id, InlinePlatform, Platform};
+use ::elise::{Heap, HeapOptions, Id, InlinePlatform, Platform, RootsSource};
+use core::cell::RefCell;
 use core::ptr::NonNull;
-use core::sync::atomic::AtomicUsize;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use core::{alloc::Layout, any::Any, mem};
 use std::collections::VecDeque;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use wasmtime_environ::elise::{
     ARRAY_LENGTH_OFFSET, BARRIER_YOUNG_PAGES_OFFSET, EliseTypeLayouts, PAGE_SHIFT,
@@ -177,10 +185,16 @@ pub struct EliseCollector {
     /// Each heap's options and platform (`Config::elise_heap`).
     options: HeapOptions,
     platform: Arc<dyn Platform>,
+    /// The embedder's heap the stores borrow, if they don't own one
+    /// (`Config::elise_heap_provider`).
+    provider: Option<Arc<dyn EliseHeapProvider>>,
 }
 
 impl EliseCollector {
-    pub fn new(heap: Option<(HeapOptions, Arc<dyn Platform>)>) -> Result<Self> {
+    pub fn new(
+        heap: Option<(HeapOptions, Arc<dyn Platform>)>,
+        provider: Option<Arc<dyn EliseHeapProvider>>,
+    ) -> Result<Self> {
         let (options, platform) =
             heap.unwrap_or_else(|| (HeapOptions::default(), Arc::new(InlinePlatform)));
         let mut types = TypeTable::default();
@@ -195,6 +209,7 @@ impl EliseCollector {
             externref,
             options,
             platform,
+            provider,
         })
     }
 }
@@ -207,6 +222,8 @@ unsafe impl GcRuntime for EliseCollector {
     fn new_gc_heap(&self, _: &Engine) -> Result<Box<dyn GcHeap>> {
         Ok(Box::new(EliseHeap {
             heap: None,
+            cage: None,
+            lends: self.provider.is_some(),
             memory: None,
             types: self.types.clone(),
             cache: Vec::new(),
@@ -272,8 +289,7 @@ pub fn elise_satb(heap: &mut dyn GcHeap, old: u32) -> Result<()> {
     };
     // SAFETY: a field's value, read in the heap, which holds the bits of
     // live objects only (elise's heap trusts compiled code, as its GC does).
-    unsafe { heap.heap_mut().satb(old) };
-    Ok(())
+    heap.bits(|bits| unsafe { bits.satb(old) })
 }
 
 /// `elise_remember`: compiled code wrote `value` at `slot`, the offset of a
@@ -284,15 +300,284 @@ pub fn elise_remember(heap: &mut dyn GcHeap, slot: u32, value: u32) -> Result<()
     };
     // SAFETY: as `elise_satb`: compiled code gives a live object's field's
     // offset, and what it just wrote there.
-    unsafe { heap.heap_mut().remember(slot, value) };
-    Ok(())
+    heap.bits(|bits| unsafe { bits.remember(slot, value) })
 }
 
-/// A GC heap of elise's: an `EngineHeap` while it is attached.
+/// kun: an embedder's heap of elise's that stores borrow
+/// (`Config::elise_heap_provider`), kun's DOM's: a thread's, found by a
+/// key, as Blink finds cppgc's heap through its thread's `ThreadState`.
+///
+/// It is trusted with nothing: a store checks that what it lends is the
+/// heap it was bound to (`raw::HeapAlive::is`), on the thread it was bound
+/// on, and that the heap lives, so a provider that lends none, or another,
+/// only makes the store's calls fail.
+pub trait EliseHeapProvider: Send + Sync {
+    /// The key of the heap this thread lends now.
+    ///
+    /// # Errors
+    ///
+    /// If this thread has none.
+    fn key(&self) -> Result<u64>;
+
+    /// Lends the heap `key` names to `f`.
+    ///
+    /// # Errors
+    ///
+    /// If this thread has no such heap, or can't lend it now (it is in
+    /// use).
+    fn with_heap(&self, key: u64, f: &mut dyn FnMut(&mut Heap)) -> Result<()>;
+}
+
+/// What a GC heap of elise's does through bits, its own (`EngineHeap`) or
+/// an embedder's (`Heap`, through the `raw` functions).
+trait Bits {
+    fn alloc(&mut self, index: u32) -> Result<u32, AllocError>;
+    fn alloc_array(&mut self, index: u32, length: u32) -> Result<u32, AllocError>;
+    /// As `raw::write_bits_in`.
+    unsafe fn write_bits(&mut self, object: u32, at: u32, bits: u32);
+    /// As `raw::new_id_in`.
+    unsafe fn new_id(&mut self, object: u32) -> Id;
+    fn id_lives(&mut self, id: Id) -> bool;
+    /// As `raw::satb_in`.
+    unsafe fn satb(&mut self, old: u32);
+    /// As `raw::remember_in`.
+    unsafe fn remember(&mut self, slot: u32, value: u32);
+    fn should_collect(&mut self) -> bool;
+    /// As `Heap::safepoint_with_roots`.
+    unsafe fn safepoint_with_roots(&mut self, roots: &mut dyn FnMut(&mut dyn FnMut(&mut u32)));
+    /// As `Heap::collect_with_roots`.
+    unsafe fn collect_with_roots(&mut self, roots: &mut dyn FnMut(&mut dyn FnMut(&mut u32)));
+}
+
+impl Bits for EngineHeap {
+    fn alloc(&mut self, index: u32) -> Result<u32, AllocError> {
+        EngineHeap::alloc(self, index)
+    }
+    fn alloc_array(&mut self, index: u32, length: u32) -> Result<u32, AllocError> {
+        EngineHeap::alloc_array(self, index, length)
+    }
+    unsafe fn write_bits(&mut self, object: u32, at: u32, bits: u32) {
+        // SAFETY: as the caller promises.
+        unsafe { EngineHeap::write_bits(self, object, at, bits) }
+    }
+    unsafe fn new_id(&mut self, object: u32) -> Id {
+        // SAFETY: as the caller promises.
+        unsafe { EngineHeap::new_id(self, object) }
+    }
+    fn id_lives(&mut self, id: Id) -> bool {
+        EngineHeap::id_lives(self, id)
+    }
+    unsafe fn satb(&mut self, old: u32) {
+        // SAFETY: as the caller promises.
+        unsafe { EngineHeap::satb(self, old) }
+    }
+    unsafe fn remember(&mut self, slot: u32, value: u32) {
+        // SAFETY: as the caller promises.
+        unsafe { EngineHeap::remember(self, slot, value) }
+    }
+    fn should_collect(&mut self) -> bool {
+        EngineHeap::should_collect(self)
+    }
+    unsafe fn safepoint_with_roots(&mut self, roots: &mut dyn FnMut(&mut dyn FnMut(&mut u32))) {
+        // SAFETY: as the caller promises.
+        unsafe { EngineHeap::safepoint_with_roots(self, roots) }
+    }
+    unsafe fn collect_with_roots(&mut self, roots: &mut dyn FnMut(&mut dyn FnMut(&mut u32))) {
+        // SAFETY: as the caller promises.
+        unsafe { EngineHeap::collect_with_roots(self, roots) }
+    }
+}
+
+impl Bits for Heap {
+    fn alloc(&mut self, index: u32) -> Result<u32, AllocError> {
+        raw::alloc_bits(self, index)
+    }
+    fn alloc_array(&mut self, index: u32, length: u32) -> Result<u32, AllocError> {
+        raw::alloc_array_bits(self, index, length)
+    }
+    unsafe fn write_bits(&mut self, object: u32, at: u32, bits: u32) {
+        // SAFETY: as the caller promises.
+        unsafe { raw::write_bits_in(self, object, at, bits) }
+    }
+    unsafe fn new_id(&mut self, object: u32) -> Id {
+        // SAFETY: as the caller promises.
+        unsafe { raw::new_id_in(self, object) }
+    }
+    fn id_lives(&mut self, id: Id) -> bool {
+        raw::id_lives_in(self, id)
+    }
+    unsafe fn satb(&mut self, old: u32) {
+        // SAFETY: as the caller promises.
+        unsafe { raw::satb_in(self, old) }
+    }
+    unsafe fn remember(&mut self, slot: u32, value: u32) {
+        // SAFETY: as the caller promises.
+        unsafe { raw::remember_in(self, slot, value) }
+    }
+    fn should_collect(&mut self) -> bool {
+        Heap::should_collect(self)
+    }
+    unsafe fn safepoint_with_roots(&mut self, roots: &mut dyn FnMut(&mut dyn FnMut(&mut u32))) {
+        // SAFETY: as the caller promises.
+        unsafe { Heap::safepoint_with_roots(self, roots) }
+    }
+    unsafe fn collect_with_roots(&mut self, roots: &mut dyn FnMut(&mut dyn FnMut(&mut u32))) {
+        // SAFETY: as the caller promises.
+        unsafe { Heap::collect_with_roots(self, roots) }
+    }
+}
+
+std::thread_local! {
+    /// Its address names the thread (`this_thread`).
+    static THREAD: u8 = const { 0 };
+}
+
+/// The current thread, as cheaply as a thread-local's address: a thread
+/// that took another's after it ended has its address, but the heaps of
+/// the one that ended are gone (`HeapAlive`).
+fn this_thread() -> usize {
+    THREAD.with(|thread| core::ptr::from_ref(thread) as usize)
+}
+
+/// A store's place in a `StoreSet` (`StoreOpaque::elise_slot`): its GC heap
+/// borrows the set's heap, and gives the set's roots source its own.
+#[derive(Clone)]
+pub struct EliseSlot {
+    pub(crate) shared: Arc<SetShared>,
+    pub(crate) index: usize,
+}
+
+/// What a `StoreSet`'s stores' GC heaps share: how they borrow the heap,
+/// and which of them runs a GC now.
+pub struct SetShared {
+    pub(crate) provider: Arc<dyn EliseHeapProvider>,
+    pub(crate) key: u64,
+    /// The heap: what the key lends later is it only if it is
+    /// (`SetShared::with_heap`), and it lives while this says so.
+    pub(crate) heap: HeapAlive,
+    /// The index of the store whose GC runs now (`EliseCollection`), whose
+    /// roots wasmtime gives: `usize::MAX` for none.
+    pub(crate) gcing: AtomicUsize,
+}
+
+impl SetShared {
+    pub(crate) fn new(provider: Arc<dyn EliseHeapProvider>, key: u64, heap: &Heap) -> Self {
+        Self {
+            provider,
+            key,
+            heap: raw::alive_in(heap),
+            gcing: AtomicUsize::new(usize::MAX),
+        }
+    }
+
+    /// `f` given the set's heap, if the key lends it (not another under
+    /// the same key).
+    ///
+    /// # Errors
+    ///
+    /// If it doesn't.
+    pub(crate) fn with_heap<R>(&self, f: impl FnOnce(&mut Heap) -> R) -> Result<R> {
+        let (mut f, mut out) = (Some(f), None);
+        self.provider.with_heap(self.key, &mut |heap| {
+            if self.heap.is(heap)
+                && let Some(f) = f.take()
+            {
+                out = Some(f(heap));
+            }
+        })?;
+        out.ok_or_else(|| format_err!("the embedder lent another elise heap, or none"))
+    }
+}
+
+/// A store of a `StoreSet`, as its roots source sees it: lent while it is
+/// borrowed.
+pub(crate) trait SetStore {
+    fn lent(&self) -> bool;
+    /// Gives `visit` the store's roots, it not lent.
+    fn roots(&self, visit: &mut dyn FnMut(&mut u32));
+}
+
+/// A `StoreSet`'s stores, by index (`None` once removed): the set and its
+/// heap's roots source own them both (the source is the heap's, the
+/// embedder's to drop), on the heap's thread.
+pub(crate) type SetStores = Rc<RefCell<Vec<Option<Rc<dyn SetStore>>>>>;
+
+/// A `StoreSet`'s stores' roots, for its heap's every GC that reads the
+/// roots: none while one of them is lent (its frames, or the embedder's
+/// `&mut` to it, may be on the stack) but the one whose GC runs, whose
+/// roots wasmtime gives.
+pub(crate) struct SetSource {
+    pub(crate) shared: Arc<SetShared>,
+    pub(crate) stores: SetStores,
+}
+
+// SAFETY: each store's roots are its GC references to the heap off it (its
+// globals', tables', the host's; its stack's are none while it isn't lent),
+// read where wasmtime's own GC reads them (`trace_roots`): 0, `i31ref`s and
+// live objects. It gives them all, or (one lent) none; and the same ones
+// again, as nothing runs between (no store's lend starts or ends in a GC).
+unsafe impl RootsSource for SetSource {
+    fn roots(&mut self, visit: &mut dyn FnMut(&mut u32)) -> bool {
+        let gcing = self.shared.gcing.load(Ordering::Relaxed);
+        let stores = self.stores.borrow();
+        let others = || {
+            stores
+                .iter()
+                .enumerate()
+                .filter_map(move |(index, store)| store.as_ref().filter(|_| index != gcing))
+        };
+        if others().any(|store| store.lent()) {
+            return false;
+        }
+        for store in others() {
+            store.roots(visit);
+        }
+        true
+    }
+}
+
+/// A heap borrowed from the embedder, as a store's GC heap has it.
+struct Lent {
+    slot: EliseSlot,
+    thread: usize,
+}
+
+impl Lent {
+    /// The heap's thread, the heap alive.
+    fn check(&self) -> Result<()> {
+        if self.thread != this_thread() {
+            bail!("a store borrowing an embedder's elise heap is used off the heap's thread");
+        }
+        if !self.slot.shared.heap.get() {
+            bail!("a store's embedder's elise heap is gone");
+        }
+        Ok(())
+    }
+
+    /// `f` given the heap, the one this store was bound to.
+    fn with<R>(&self, f: impl FnOnce(&mut Heap) -> R) -> Result<R> {
+        self.check()?;
+        self.slot.shared.with_heap(f)
+    }
+}
+
+/// A GC heap's elise heap: its own, or the embedder's it borrows.
+enum Backing {
+    Owned(EngineHeap),
+    Lent(Lent),
+}
+
+/// A GC heap of elise's: its heap while it is attached.
 struct EliseHeap {
     /// Dropped as it is detached: a pooling allocator gives the next store
     /// this `EliseHeap`, which must have none of the last one's objects.
-    heap: Option<EngineHeap>,
+    /// A borrowed heap is bound after it is attached (`elise_bind`).
+    heap: Option<Backing>,
+    /// The heap's cage's start and its barrier state, where they stay while
+    /// it lives.
+    cage: Option<(crate::vm::SendSyncPtr<u8>, NonNull<u8>)>,
+    /// Whether it borrows the embedder's heap (`Config::elise_heap_provider`).
+    lends: bool,
     /// What Wasmtime gave, held and given back.
     memory: Option<crate::vm::Memory>,
     types: Arc<Mutex<TypeTable>>,
@@ -307,13 +592,67 @@ struct EliseHeap {
     no_gc_count: usize,
 }
 
+// SAFETY: its barrier state's pointer is an `EngineHeap`'s (which is
+// `Send` and `Sync`, and moves with it) or a borrowed heap's, which it
+// reads, and gives compiled code, only on the heap's thread (`Lent::check`,
+// and `check_thread` as wasm is entered).
+unsafe impl Send for EliseHeap {}
+// SAFETY: as above; its `&self` methods read objects through the cage's
+// start only on the heap's thread, or its own `EngineHeap`'s (`Sync`).
+unsafe impl Sync for EliseHeap {}
+
+/// Binds a store's GC heap, just attached, to the heap its `StoreSet`
+/// borrows: a GC heap of elise's that borrows the embedder's heap needs
+/// one (`slot`), the others none.
+pub fn elise_bind(heap: &mut dyn GcHeap, slot: Option<&EliseSlot>) -> Result<()> {
+    let Some(heap) = heap.as_any_mut().downcast_mut::<EliseHeap>() else {
+        if slot.is_some() {
+            bail!("a `StoreSet`'s store's GC heap isn't elise's");
+        }
+        return Ok(());
+    };
+    match (heap.lends, slot) {
+        (false, None) => Ok(()),
+        (false, Some(_)) => bail!("a `StoreSet` needs `Config::elise_heap_provider`"),
+        (true, None) => {
+            bail!("a store whose GC heap borrows the embedder's elise heap is a `StoreSet`'s")
+        }
+        (true, Some(slot)) => {
+            let (cage, barrier) = slot
+                .shared
+                .with_heap(|heap| (raw::cage_in(heap), raw::barrier_state_in(heap).cast::<u8>()))?;
+            heap.cage = Some((
+                crate::vm::SendSyncPtr::new(NonNull::new(cage).unwrap()),
+                barrier,
+            ));
+            heap.heap = Some(Backing::Lent(Lent {
+                slot: slot.clone(),
+                thread: this_thread(),
+            }));
+            Ok(())
+        }
+    }
+}
+
 impl EliseHeap {
-    fn heap(&self) -> &EngineHeap {
-        self.heap.as_ref().expect("an attached heap")
+    /// The cage's start, the heap checked first (a borrowed one's thread,
+    /// and that it lives).
+    fn cage(&self) -> Result<*mut u8> {
+        match &self.heap {
+            Some(Backing::Owned(_)) => {}
+            Some(Backing::Lent(lent)) => lent.check()?,
+            None => bail_bug!("no heap bound"),
+        }
+        Ok(self.cage.expect("a bound heap's cage").0.as_ptr())
     }
 
-    fn heap_mut(&mut self) -> &mut EngineHeap {
-        self.heap.as_mut().expect("an attached heap")
+    /// `f` given the heap.
+    fn bits<R>(&mut self, f: impl FnOnce(&mut dyn Bits) -> R) -> Result<R> {
+        self.cage()?;
+        match self.heap.as_mut().expect("a bound heap") {
+            Backing::Owned(heap) => Ok(f(heap)),
+            Backing::Lent(lent) => lent.with(|heap| f(heap)),
+        }
     }
 
     /// The type `ty` is in elise.
@@ -353,10 +692,10 @@ impl EliseHeap {
     fn alloc(
         &mut self,
         header: VMGcHeader,
-        alloc: impl FnOnce(&mut EngineHeap) -> Result<u32, AllocError>,
+        alloc: impl FnOnce(&mut dyn Bits) -> Result<u32, AllocError>,
         bytes: usize,
     ) -> Result<Result<VMGcRef, u64>> {
-        let bits = match alloc(self.heap_mut()) {
+        let bits = match self.bits(alloc)? {
             Ok(bits) => bits,
             Err(AllocError::GcDue) => return Ok(Err(u64::try_from(bytes)?)),
             Err(AllocError::TooLarge) => return Err(Trap::AllocationTooLarge.into()),
@@ -365,8 +704,7 @@ impl EliseHeap {
         // SAFETY: the object just allocated, zeroed, its data 8-aligned and
         // at least a `VMGcHeader`'s bytes (its layout's first).
         unsafe {
-            self.heap()
-                .cage()
+            self.cage()?
                 .add(usize::try_from(bits)?)
                 .cast::<VMGcHeader>()
                 .write(header);
@@ -376,11 +714,12 @@ impl EliseHeap {
 
     fn object_bytes(&self, gc_ref: &VMGcRef) -> Result<(*mut u8, usize)> {
         let offset = Self::offset(gc_ref)?;
-        let heap = self.heap();
+        let cage = self.cage()?;
         // SAFETY: as the caller of the `GcHeap` method promises, an object
-        // of this heap, live (the store roots what it reaches).
-        let size = unsafe { heap.size(u32::try_from(offset)?) };
-        Ok((heap.cage().wrapping_add(offset), size))
+        // of this heap, live (the store roots what it reaches); the heap's
+        // cage, checked.
+        let size = unsafe { raw::size_at(cage, u32::try_from(offset)?) };
+        Ok((cage.wrapping_add(offset), size))
     }
 }
 
@@ -392,12 +731,18 @@ unsafe impl GcHeap for EliseHeap {
     fn attach(&mut self, memory: crate::vm::Memory) {
         assert!(!self.is_attached());
         self.memory = Some(memory);
-        self.heap = Some(EngineHeap::new(self.options, self.platform.clone()));
+        if !self.lends {
+            let heap = EngineHeap::new(self.options, self.platform.clone());
+            let cage = NonNull::new(heap.cage()).expect("the cage isn't null");
+            self.cage = Some((cage.into(), heap.barrier_state().cast()));
+            self.heap = Some(Backing::Owned(heap));
+        }
     }
 
     fn detach(&mut self) -> crate::vm::Memory {
         assert!(self.is_attached());
         self.heap = None;
+        self.cage = None;
         self.cache.clear();
         // The store's host data table goes with it.
         self.externrefs.clear();
@@ -446,8 +791,7 @@ unsafe impl GcHeap for EliseHeap {
         // SAFETY: as the caller promises, `object` is a live object of this
         // heap, `offset` one of its GC references (an edge of its type's
         // layout), and `source` none, an `i31ref` or a live object of it.
-        unsafe { self.heap_mut().write_bits(object, offset, bits) };
-        Ok(())
+        self.bits(|heap| unsafe { heap.write_bits(object, offset, bits) })
     }
 
     fn init_gc_ref_in(
@@ -480,8 +824,9 @@ unsafe impl GcHeap for EliseHeap {
         };
         self.gc_object_data(&gc_ref)?
             .write_u32(EXTERNREF_HOST_DATA_OFFSET, host_data.into_raw())?;
+        let bits = gc_ref.as_raw_u32();
         // SAFETY: the object just allocated.
-        let id = unsafe { self.heap_mut().new_id(gc_ref.as_raw_u32()) };
+        let id = self.bits(|heap| unsafe { heap.new_id(bits) })?;
         self.externrefs.push((id, host_data));
         Ok(Ok(gc_ref.into_externref_unchecked()))
     }
@@ -497,8 +842,8 @@ unsafe impl GcHeap for EliseHeap {
     fn header(&self, gc_ref: &VMGcRef) -> Result<&VMGcHeader> {
         let offset = Self::offset(gc_ref)?;
         // SAFETY: as the caller promises, a live object of this heap, whose
-        // data starts with its `VMGcHeader`, 8-aligned.
-        let header = unsafe { &*self.heap().cage().add(offset).cast::<VMGcHeader>() };
+        // data starts with its `VMGcHeader`, 8-aligned; its cage, checked.
+        let header = unsafe { &*self.cage()?.add(offset).cast::<VMGcHeader>() };
         debug_assert!(header.kind().is_some(), "header: invalid VMGcKind");
         Ok(header)
     }
@@ -506,7 +851,7 @@ unsafe impl GcHeap for EliseHeap {
     fn header_mut(&mut self, gc_ref: &VMGcRef) -> Result<&mut VMGcHeader> {
         let offset = Self::offset(gc_ref)?;
         // SAFETY: as `header`'s; `&mut self` borrows the heap's objects.
-        let header = unsafe { &mut *self.heap_mut().cage().add(offset).cast::<VMGcHeader>() };
+        let header = unsafe { &mut *self.cage()?.add(offset).cast::<VMGcHeader>() };
         debug_assert!(header.kind().is_some(), "header_mut: invalid VMGcKind");
         Ok(header)
     }
@@ -592,7 +937,13 @@ unsafe impl GcHeap for EliseHeap {
     }
 
     fn allocated_bytes(&self) -> usize {
-        self.heap().used_bytes()
+        if self.cage().is_err() {
+            return 0;
+        }
+        match self.heap.as_ref().expect("a bound heap") {
+            Backing::Owned(heap) => heap.used_bytes(),
+            Backing::Lent(lent) => lent.with(|heap| heap.used_bytes()).unwrap_or(0),
+        }
     }
 
     fn gc<'a, 'b>(
@@ -615,7 +966,11 @@ unsafe impl GcHeap for EliseHeap {
     /// attached: compiled code runs only then, its store's instances
     /// having the attached heap's.
     unsafe fn vmctx_gc_heap_data(&self) -> NonNull<u8> {
-        self.heap().barrier_state().cast()
+        self.cage.expect("a bound heap's barrier state").1
+    }
+
+    fn check_thread(&self) -> Result<()> {
+        self.cage().map(|_| ())
     }
 
     fn take_memory(&mut self) -> crate::vm::Memory {
@@ -629,9 +984,11 @@ unsafe impl GcHeap for EliseHeap {
     }
 
     fn vmmemory(&self) -> VMMemoryDefinition {
-        let cage = NonNull::new(self.heap().cage()).expect("the cage isn't null");
+        // Only its address: compiled code reads it, on the heap's thread
+        // (`check_thread`).
+        let cage = self.cage.expect("a bound heap's cage").0;
         VMMemoryDefinition {
-            base: cage.into(),
+            base: cage.as_non_null().into(),
             current_length: AtomicUsize::new(CAGE_BYTES),
         }
     }
@@ -653,7 +1010,10 @@ unsafe impl GcHeap for EliseHeap {
         let (data, size) = self.object_bytes(gc_ref)?;
         // SAFETY: a live object's bytes (`object_bytes`), committed, which
         // nothing moves or frees while `&self` lasts (elise moves objects
-        // only in the GCs given the roots, which take `&mut self`). No
+        // only in the GCs given the roots: this store's take `&mut self`; a
+        // borrowed heap's others run in the embedder's and other stores'
+        // calls, not while this store's runtime reads it, on the heap's
+        // thread, `object_bytes` checked). No
         // reference covers them: the runtime's are these cells, and elise's
         // marker reads the object's GC references atomically, on its
         // workers too. Those references are written only through
@@ -688,36 +1048,56 @@ impl GarbageCollection for EliseCollection<'_, '_> {
                 visit(slot);
             }
         };
-        let heap = self.heap.heap_mut();
+        let mut give = give;
+        // A borrowed heap's other stores' roots come from its `StoreSet`'s
+        // source, which skips this one's: wasmtime gives them.
+        let gcing = match &self.heap.heap {
+            Some(Backing::Lent(lent)) => Some(lent.slot.clone()),
+            _ => None,
+        };
+        if let Some(slot) = &gcing {
+            slot.shared.gcing.store(slot.index, Ordering::Relaxed);
+        }
         // SAFETY: the store's roots, every GC reference to the heap off it
         // (the stack's, globals', tables', the host's), each the bits of a
         // live object or an `i31ref`; given twice alike, as `bits` is.
-        unsafe {
+        let collected = self.heap.bits(|heap| unsafe {
             if heap.should_collect() {
-                heap.safepoint_with_roots(give);
+                heap.safepoint_with_roots(&mut give);
             } else {
-                heap.collect_with_roots(give);
+                heap.collect_with_roots(&mut give);
             }
+        });
+        if let Some(slot) = &gcing {
+            slot.shared.gcing.store(usize::MAX, Ordering::Relaxed);
         }
+        collected?;
         for (root, bits) in roots.iter_mut().zip(bits) {
             match VMGcRef::from_raw_u32(bits) {
                 Some(gc_ref) => root.set(gc_ref),
                 None => bail_bug!("elise gave a root back as none"),
             }
         }
-        let EliseHeap {
-            heap, externrefs, ..
-        } = &mut *self.heap;
-        let heap = heap.as_mut().expect("an attached heap");
-        let mut dead = Vec::new();
-        externrefs.retain(|&(id, host_data)| {
-            let lives = heap.id_lives(id);
-            if !lives {
-                dead.push(host_data);
-            }
-            lives
+        let externrefs = mem::take(&mut self.heap.externrefs);
+        let lives = self.heap.bits(|heap| {
+            externrefs
+                .iter()
+                .map(|&(id, _)| heap.id_lives(id))
+                .collect::<Vec<bool>>()
         });
-        for host_data in dead {
+        let lives = match lives {
+            Ok(lives) => lives,
+            Err(e) => {
+                self.heap.externrefs = externrefs;
+                return Err(e);
+            }
+        };
+        let (kept, dead): (Vec<_>, Vec<_>) = externrefs
+            .into_iter()
+            .zip(lives)
+            .partition(|&(_, lives)| lives);
+        self.heap.externrefs = kept.into_iter().map(|(entry, _)| entry).collect();
+        for ((_, host_data), _) in dead {
             self.trace_state.host_data_table.dealloc(host_data)?;
         }
         Ok(GcProgress::Complete)
@@ -775,7 +1155,7 @@ mod tests {
 
     #[test]
     fn a_type_unregistered_is_retired() {
-        let collector = EliseCollector::new(None).unwrap();
+        let collector = EliseCollector::new(None, None).unwrap();
         let ty = VMSharedTypeIndex::new(3);
         let layout = GcLayout::Array(GcArrayLayout {
             base_size: 12,

@@ -728,6 +728,16 @@ fn resume_fiber<'a>(
     result: WasmtimeResume,
 ) -> Result<WasmtimeComplete, StoreFiberYield> {
     assert_eq!(store.id(), fiber.id);
+    // kun: as `invoke_wasm_and_catch_traps` checks. No error can be given
+    // here, and a panic would drop the fiber's future, which resumes the
+    // fiber to dispose of it: here again.
+    #[cfg(feature = "gc-elise")]
+    if let Some(gc_store) = store.optional_gc_store_mut()
+        && let Err(e) = gc_store.gc_heap.check_thread()
+    {
+        eprintln!("a fiber resumed where its store can't run: {e}");
+        std::process::abort();
+    }
 
     struct Restore<'a, 'b> {
         store: &'b mut StoreOpaque,

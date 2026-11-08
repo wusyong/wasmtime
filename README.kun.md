@@ -26,6 +26,9 @@ from outside; the collectors are modules of the `wasmtime` crate.
 - It collects, keeping what the store's roots (the host's `Rooted`s,
   globals, tables, wasm frames' stack maps) reach. An `externref`'s host
   data is dropped once elise finds its object dead.
+- A store's GC heap can borrow the embedder's elise heap instead
+  (`Config::elise_heap_provider`), its stores a `StoreSet`'s ("A heap
+  borrowed from the embedder"): the DOM's and wasm's objects in one heap.
 - There is no heap limit: elise panics when its cage is full, and a store's
   `ResourceLimiter` doesn't apply.
 - Works with elise's commit noted in the last commit of `kun` that changed
@@ -69,6 +72,43 @@ from outside; the collectors are modules of the `wasmtime` crate.
   stays where the common layouts put it, 16-aligned from the data's start,
   8-aligned in memory. Compiled code's GC field accesses carry no `aligned`
   flag and the host's copy bytes, so neither needs more.
+
+## A heap borrowed from the embedder
+
+With `Config::elise_heap_provider`, a store's GC heap owns no elise heap:
+it borrows the embedder's (kun's DOM's), which holds the embedder's
+objects too, through the provider, which lends a thread's heap by a key
+(`EliseHeapProvider::with_heap`). The heap's GCs run in the embedder's
+calls (its safepoints) and in each store's, so every GC that reads the
+roots needs every store's roots. Nothing of it relies on the embedder's
+code for memory safety:
+
+- Such stores are a `StoreSet`'s, which owns them (behind `Rc`, so it
+  isn't `Send`: they stay on the heap's thread) and is the heap's roots
+  source: at each GC that reads the roots it gives elise the roots of the
+  stores it doesn't lend now, as their own GC finds them (`trace_roots`),
+  and none at all while another than the one whose GC runs is lent (its
+  wasm frames, or the embedder's `&mut` to it, may be on the stack): that
+  GC doesn't run, as inside frames. The store whose GC runs gives its own
+  roots, as wasmtime does. A store with a provider outside a set gets no
+  GC heap (attaching it fails).
+- While the set lends a store (`StoreSet::with`, a `StoreContextMut`), it
+  counts the heap's frames (`Heap::enter_frames`): the embedder's
+  safepoints then run no GC that reads the roots, which they can't see on
+  the stack. A lend that unwinds leaves them too.
+- A GC heap keeps the cage's start and the barrier state (where they stay
+  while the heap lives), reads objects there without borrowing the heap,
+  and checks first that it is on the heap's thread, and that the heap
+  lives (`raw::HeapAlive`); so does entering wasm
+  (`invoke_wasm_and_catch_traps`) and resuming a fiber (aborting there:
+  no error can be given), as compiled code reads and writes the heap
+  without asking. Each time a store or its set borrows the heap it checks
+  it is the set's (`HeapAlive::is`: another heap under the same key, even
+  at the same cage, isn't). A provider that lends none, or another, only
+  makes the calls fail.
+- elise's side: removing or replacing a roots source, and leaving frames,
+  are `unsafe`; a heap dropped inside frames leaks (compiled code may
+  still use its cage).
 
 ## Elise's compiled code
 
@@ -149,14 +189,22 @@ Each is marked with a `kun:` comment.
 - `crates/wasmtime`:
   - `Cargo.toml`: the feature `gc-elise`, and elise by path.
   - `src/config.rs`: `Collector::Elise` (never `Auto`), its runtime,
-    `Config::elise_heap`.
+    `Config::elise_heap`, `Config::elise_heap_provider`.
   - `src/lib.rs`: `pub use elise`.
   - `src/runtime/vm/gc/enabled/elise.rs` (new), `enabled.rs`: the
-    collector, and unit tests of its type table.
+    collector, its own heap or a borrowed one (`EliseHeapProvider`, the
+    `StoreSet`'s roots source), and unit tests of its type table.
+  - `src/runtime/store/elise.rs` (new), `src/runtime/store.rs`,
+    `src/runtime.rs`: `StoreSet`, a store's place in it
+    (`StoreOpaque::elise_slot`); `src/runtime/store/gc.rs`: a GC heap bound
+    to the set's heap as it is allocated, a store's roots for the set
+    (`elise_trace_roots`).
+  - `src/runtime/func.rs` (`invoke_wasm_and_catch_traps`),
+    `src/runtime/fiber.rs` (`resume_fiber`): `GcHeap::check_thread`.
   - `src/runtime/vm/gc/gc_runtime.rs`: `GcRuntime::register_type` and
     `unregister_type`; `GcHeap::write_gc_ref_in`, `init_gc_ref_in` (a
     barrier given the object, which a generational collector needs) and
-    `capacity`. All have defaults the other collectors keep. No
+    `capacity`, `check_thread`. All have defaults the other collectors keep. No
     `gc_object_data_mut`: `gc_object_data`'s default makes the object's
     cells from the memory's base pointer, not from `heap_slice`.
   - `src/runtime/vm/gc/data.rs`: `VMGcObjectData`'s bytes are cells, its
@@ -178,7 +226,7 @@ Each is marked with a `kun:` comment.
 - `tests/all/main.rs`: `gc_engine()` takes elise with
   `WASMTIME_TEST_COLLECTOR=elise` (checking the heap after each GC) or
   `elise-stress` (a GC at every allocation, too); `tests/all/elise.rs`
-  (new).
+  and `tests/all/elise/shared.rs` (new, a borrowed heap's).
 - `tests/wast.rs`: with the same variable, the spec tests of GC types
   only, with elise, compiled by Cranelift natively and for Pulley.
 - `crates/test-util`: `Collector::Elise` for the spec tests;
@@ -222,3 +270,7 @@ Miri over the fork) wait for a macOS or Linux machine.
 
 The test programs (`crates/test-programs`) need the `wasm32-wasip1` and
 `wasm32-unknown-unknown` targets.
+
+Not tested: `resume_fiber`'s thread check, which aborts (reaching it takes
+an async call in a `StoreSet::with`, moved to another thread and polled
+there); reviewed only.

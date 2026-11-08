@@ -128,6 +128,11 @@ pub use self::async_::CallHookHandler;
 mod gc;
 #[cfg(not(feature = "gc"))]
 mod gc_disabled;
+// kun: the stores that borrow an embedder's elise heap.
+#[cfg(feature = "gc-elise")]
+mod elise;
+#[cfg(feature = "gc-elise")]
+pub use self::elise::StoreSet;
 
 /// A [`Store`] is a collection of WebAssembly instances and host-defined state.
 ///
@@ -476,6 +481,9 @@ pub struct StoreOpaque {
     host_globals: TryPrimaryMap<DefinedGlobalIndex, StoreBox<VMHostGlobalContext>>,
     // GC-related fields.
     gc_store: Option<GcStore>,
+    /// kun: its place in a `StoreSet`, whose heap its GC heap borrows.
+    #[cfg(feature = "gc-elise")]
+    pub(crate) elise_slot: Option<crate::runtime::vm::EliseSlot>,
     #[cfg(feature = "gc")]
     gc_data: gc::StoreGcData,
 
@@ -733,6 +741,8 @@ impl<T> Store<T> {
             instances: TryPrimaryMap::new(),
             signal_handler: None,
             gc_store: None,
+            #[cfg(feature = "gc-elise")]
+            elise_slot: None,
             #[cfg(feature = "gc")]
             gc_data: Default::default(),
             modules: ModuleRegistry::default(),

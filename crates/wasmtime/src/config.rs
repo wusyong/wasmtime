@@ -165,6 +165,10 @@ pub struct Config {
     /// kun: elise's heap options and platform (`Config::elise_heap`).
     #[cfg(feature = "gc-elise")]
     elise_heap: Option<(crate::elise::HeapOptions, Arc<dyn crate::elise::Platform>)>,
+    /// kun: the embedder's elise heap the stores borrow
+    /// (`Config::elise_heap_provider`).
+    #[cfg(feature = "gc-elise")]
+    elise_heap_provider: Option<Arc<dyn crate::EliseHeapProvider>>,
     profiling_strategy: ProfilingStrategy,
     tunables: ConfigTunables,
 
@@ -281,6 +285,8 @@ impl Config {
             collector: Collector::default(),
             #[cfg(feature = "gc-elise")]
             elise_heap: None,
+            #[cfg(feature = "gc-elise")]
+            elise_heap_provider: None,
             #[cfg(feature = "cache")]
             cache: None,
             profiling_strategy: ProfilingStrategy::None,
@@ -1507,6 +1513,27 @@ impl Config {
     ) -> &mut Self {
         self.elise_heap = Some((options, platform));
         self
+    }
+
+    /// kun: with [`Collector::Elise`], each store's GC heap borrows the
+    /// embedder's elise heap that `provider` lends (kun's DOM's), which
+    /// holds the embedder's objects too, instead of owning one. Such stores
+    /// are a [`StoreSet`](crate::StoreSet)'s, which gives the heap their
+    /// roots, and stay on the heap's thread. [`Config::elise_heap`]'s
+    /// options are the embedder's heap's then.
+    #[cfg(feature = "gc-elise")]
+    pub fn elise_heap_provider(
+        &mut self,
+        provider: Arc<dyn crate::EliseHeapProvider>,
+    ) -> &mut Self {
+        self.elise_heap_provider = Some(provider);
+        self
+    }
+
+    /// kun: [`Config::elise_heap_provider`]'s.
+    #[cfg(feature = "gc-elise")]
+    pub(crate) fn elise_provider(&self) -> Option<&Arc<dyn crate::EliseHeapProvider>> {
+        self.elise_heap_provider.as_ref()
     }
 
     /// Configures the initial size, in bytes, of each store's GC heap.
@@ -3019,6 +3046,7 @@ impl Config {
                 #[cfg(feature = "gc-elise")]
                 Collector::Elise => try_new::<Arc<_>>(crate::runtime::vm::EliseCollector::new(
                     self.elise_heap.clone(),
+                    self.elise_heap_provider.clone(),
                 )?)? as _,
                 #[cfg(not(feature = "gc-elise"))]
                 Collector::Elise => unreachable!(),

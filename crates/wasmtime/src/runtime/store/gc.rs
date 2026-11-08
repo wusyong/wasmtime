@@ -718,6 +718,29 @@ impl StoreOpaque {
         Ok(())
     }
 
+    /// kun: this store's roots, for its `StoreSet`'s roots source
+    /// (`SetSource`): each of its GC references to the heap off it, as its
+    /// own GC finds them (`trace_roots`), given to `visit` as bits and
+    /// written back. The same ones in the same order each time, while
+    /// nothing changes the store.
+    #[cfg(feature = "gc-elise")]
+    pub(crate) fn elise_trace_roots(&mut self, visit: &mut dyn FnMut(&mut u32)) {
+        if self.gc_store.is_none() {
+            return;
+        }
+        let mut roots = core::mem::take(&mut self.gc_data.gc_roots_list);
+        vm::assert_ready(self.trace_roots(&mut roots, Asyncness::No));
+        // SAFETY: the roots just traced, which nothing changes meanwhile.
+        for mut root in unsafe { roots.iter() } {
+            let gc_ref = root.get().expect("a root traced just now reads");
+            let mut bits = gc_ref.as_raw_u32();
+            visit(&mut bits);
+            root.set(VMGcRef::from_raw_u32(bits).expect("elise gave a root back as none"));
+        }
+        roots.clear();
+        self.gc_data.gc_roots_list = roots;
+    }
+
     async fn trace_roots(&mut self, gc_roots_list: &mut GcRootsList, asyncness: Asyncness) {
         log::trace!("Begin trace GC roots");
 
@@ -1043,6 +1066,17 @@ impl StoreOpaque {
                 },
             };
         heap.attach(mem);
+        // kun: a GC heap that borrows the embedder's elise heap is bound to
+        // it, through its store's `StoreSet`.
+        #[cfg(feature = "gc-elise")]
+        if let Err(e) = vm::elise_bind(&mut *heap, self.elise_slot.as_ref()) {
+            let mem = heap.detach();
+            let allocator = engine.allocator();
+            let mem_alloc_index = allocator.deallocate_gc_heap(index, heap);
+            // SAFETY: the memory just allocated, its GC heap gone.
+            unsafe { allocator.deallocate_memory(None, mem_alloc_index, mem) };
+            return Err(e);
+        }
 
         let gc_store = GcStore::new(index, heap, engine.tunables().gc_zeal_alloc_counter);
         *self.vm_store_context.gc_heap.get_mut() = gc_store.vmmemory_definition();

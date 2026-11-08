@@ -108,10 +108,15 @@ pub use store::{
     AsContext, AsContextMut, CallHook, Store, StoreContext, StoreContextMut, StoreHookState,
     UpdateDeadline,
 };
+// kun: an embedder's elise heap that stores borrow.
+#[cfg(feature = "gc-elise")]
+pub use store::StoreSet;
 pub use trap::*;
 pub use types::*;
 pub use v128::V128;
 pub use values::*;
+#[cfg(feature = "gc-elise")]
+pub use vm::EliseHeapProvider;
 
 #[cfg(feature = "pooling-allocator")]
 pub use vm::{PoolConcurrencyLimitError, PoolingAllocatorMetrics};

@@ -137,6 +137,13 @@ pub unsafe trait GcHeap: 'static + Send + Sync {
     ////////////////////////////////////////////////////////////////////////////
     // No-GC Scope Methods
 
+    /// kun: whether this thread may use the heap (an embedder's heap of
+    /// elise's, borrowed: its thread's, alive), as wasm is entered or
+    /// resumed: compiled code reads and writes it without asking.
+    fn check_thread(&self) -> Result<()> {
+        Ok(())
+    }
+
     /// Enter a no-GC scope.
     ///
     /// Calling the `gc` method when we are inside a no-GC scope should panic.

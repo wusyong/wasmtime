@@ -13,6 +13,9 @@
 //! refer to, and a marking runs a step at a time between its writes. Every
 //! heap of these checks itself after each GC.
 
+// Stores that borrow the embedder's heap.
+mod shared;
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use wasmtime::elise::{HeapOptions, InlinePlatform, Job, JobDelegate, JobHandle, Platform};
