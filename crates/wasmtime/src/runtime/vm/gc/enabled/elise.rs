@@ -458,6 +458,8 @@ pub struct SetShared {
     /// The index of the store whose GC runs now (`EliseCollection`), whose
     /// roots wasmtime gives: `usize::MAX` for none.
     pub(crate) gcing: AtomicUsize,
+    /// The thread the set was made on, the heap's: where its stores run.
+    pub(crate) thread: usize,
 }
 
 impl SetShared {
@@ -467,7 +469,18 @@ impl SetShared {
             key,
             heap: raw::alive_in(heap),
             gcing: AtomicUsize::new(usize::MAX),
+            thread: this_thread(),
         }
+    }
+
+    /// Whether this is the set's thread: a store of the set whose fiber
+    /// takes sync calls (`StoreOpaque::validate_sync_call`) resumes there
+    /// only.
+    pub(crate) fn check_thread(&self) -> Result<()> {
+        if self.thread != this_thread() {
+            bail!("a store of a `StoreSet` is used off its set's thread");
+        }
+        Ok(())
     }
 
     /// `f` given the set's heap, if the key lends it (not another under

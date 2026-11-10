@@ -319,6 +319,81 @@ fn a_store_is_used_on_its_heaps_thread_only() -> Result<()> {
     Ok(())
 }
 
+/// A module whose `run` calls the host's `dispatch`, which calls the
+/// module's `listener` back (as an embedder dispatches an event to the
+/// guest's own listener, within the guest's call), then gives its count.
+const CALLS_BACK: &str = r#"
+    (module
+        (import "" "dispatch" (func $dispatch (param i32)))
+        (global $count (mut i32) (i32.const 0))
+        (func (export "run") (param $depth i32) (result i32)
+            (call $dispatch (local.get $depth))
+            (global.get $count))
+        (func (export "listener") (param $depth i32)
+            (global.set $count (i32.add (global.get $count) (i32.const 1)))
+            (if (i32.gt_u (local.get $depth) (i32.const 1))
+                (then (call $dispatch (i32.sub (local.get $depth) (i32.const 1)))))))
+"#;
+
+/// The host's `dispatch`: a sync call of the caller's `listener`.
+fn dispatch(mut caller: Caller<'_, ()>, depth: i32) -> Result<()> {
+    let listener = caller
+        .get_export("listener")
+        .and_then(Extern::into_func)
+        .expect("the module's listener");
+    listener.call(&mut caller, &[Val::I32(depth)], &mut [])
+}
+
+/// `future` polled until it is done (nothing it waits for is outside it).
+fn block_on<F: std::future::Future>(future: F) -> F::Output {
+    let mut future = std::pin::pin!(future);
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    loop {
+        if let std::task::Poll::Ready(output) = future.as_mut().poll(&mut cx) {
+            return output;
+        }
+    }
+}
+
+/// On a set's store's fiber (it was entered with `call_async`) a host
+/// function calls the guest that called it, with a sync `call`, each
+/// call on the fiber's stack under the one before.
+#[test]
+fn a_host_function_calls_its_guest_back_on_a_sets_fiber() -> Result<()> {
+    lend(11);
+    let mut set = set()?;
+    let engine = engine_of(&set)?;
+    let module = Module::new(&engine, CALLS_BACK)?;
+    let index = set.insert(Store::new(&engine, ()))?;
+    let count = set.with(index, |mut cx| -> Result<i32> {
+        let host = Func::wrap(&mut cx, dispatch);
+        let instance = Instance::new(&mut cx, &module, &[host.into()])?;
+        let run = instance.get_typed_func::<i32, i32>(&mut cx, "run")?;
+        block_on(run.call_async(&mut cx, 3))
+    })??;
+    assert_eq!(count, 3);
+    drop(set);
+    DOM.set(None);
+    Ok(())
+}
+
+/// A store of no set doesn't: its fiber may resume on any thread.
+#[test]
+fn a_store_of_no_set_takes_no_sync_call_on_its_fiber() -> Result<()> {
+    let engine = Engine::default();
+    let module = Module::new(&engine, CALLS_BACK)?;
+    let mut store = Store::new(&engine, ());
+    let host = Func::wrap(&mut store, dispatch);
+    let instance = Instance::new(&mut store, &module, &[host.into()])?;
+    let run = instance.get_typed_func::<i32, i32>(&mut store, "run")?;
+    let error = block_on(run.call_async(&mut store, 1)).unwrap_err();
+    assert!(
+        format!("{error:?}").contains("cannot do blocking `call` from an async context"),
+        "{error:?}"
+    );
+    Ok(())
+}
+
 #[test]
 fn a_store_whose_heap_went_fails() -> Result<()> {
     lend(7);

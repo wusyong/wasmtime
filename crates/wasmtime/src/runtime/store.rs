@@ -2278,6 +2278,25 @@ at https://bytecodealliance.org/security.
 
     #[inline]
     pub(crate) fn validate_sync_call(&mut self) -> Result<()> {
+        // machopo: a store of a `StoreSet` that is on a fiber takes a sync
+        // call all the same: a host function calling back the guest that
+        // called it (an embedder dispatching an event to the guest's own
+        // listener, within the call the guest made), on the fiber's stack
+        // as it would be on the thread's with no fiber. What the checks
+        // below keep from happening, a fiber suspended under such a call
+        // resumed on another thread with the host function's frames,
+        // can't: a set's store's fiber resumes on its set's thread only
+        // (`resume_fiber` aborts otherwise). The recursion is the guest's
+        // to bound, as with no fiber.
+        #[cfg(all(feature = "async", feature = "gc-elise"))]
+        if self
+            .elise_slot
+            .as_ref()
+            .is_some_and(|slot| slot.shared.check_thread().is_ok())
+            && self.can_block()
+        {
+            return Ok(());
+        }
         #[cfg(feature = "async")]
         if self.async_state.async_required {
             bail!("store configuration requires that `*_async` functions are used instead");

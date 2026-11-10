@@ -738,6 +738,16 @@ fn resume_fiber<'a>(
         eprintln!("a fiber resumed where its store can't run: {e}");
         std::process::abort();
     }
+    // machopo: and a set's store's, whether or not it has a GC heap: its
+    // fiber may hold a host function's frames under a sync call
+    // (`StoreOpaque::validate_sync_call`), which stay on the set's thread.
+    #[cfg(feature = "gc-elise")]
+    if let Some(slot) = &store.elise_slot
+        && let Err(e) = slot.shared.check_thread()
+    {
+        eprintln!("a fiber resumed where its store can't run: {e}");
+        std::process::abort();
+    }
 
     struct Restore<'a, 'b> {
         store: &'b mut StoreOpaque,

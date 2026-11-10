@@ -121,6 +121,32 @@ code for memory safety:
   are `unsafe`; a heap dropped inside frames leaks (compiled code may
   still use its cage).
 
+### A sync call on a set's store's fiber
+
+A host function of a set's store may call back the guest that called it
+with a sync `call` (`Func::call`, a component's `TypedFunc::call`) while
+the store is on a fiber (it was entered with `call_async` or
+`run_concurrent`): machopo's DOM dispatches an event to the guest's own
+listener within the member the guest called (`focus()`), as a JS
+engine's listeners run on the stack of the call that dispatched. Upstream
+refuses a sync call on a fiber (`StoreOpaque::validate_sync_call`, "cannot
+do blocking `call` from an async context", and "store configuration
+requires that `*_async` functions are used" for a store with async host
+functions), for two reasons its comment gives:
+
+- The call may suspend the fiber (a GC, an epoch interruption), and the
+  embedder may then poll the top-level future from another thread, the
+  host function's frames (and whatever of its thread's they hold) with
+  it. A set's store's fiber resumes on its set's thread only: `SetShared`
+  keeps the thread it was made on, and `resume_fiber` aborts on another
+  (as it does for a GC heap whose heap is another thread's), whether or
+  not the store has a GC heap. So the frames stay on their thread. The
+  sync call itself is allowed only there too.
+- The recursion may overflow the stack. It may with no fiber as well: it
+  is the guest's to bound, and a fiber's stack has its guard page.
+
+A store of no set is refused as before.
+
 ## Elise's compiled code
 
 The compiler is `crates/cranelift/src/func_environ/gc/elise.rs`.
@@ -216,6 +242,11 @@ Each is marked with a `machopo:` comment.
     (`elise_trace_roots`), a set's store's GC with no GC heap (`do_gc`).
   - `src/runtime/func.rs` (`invoke_wasm_and_catch_traps`),
     `src/runtime/fiber.rs` (`resume_fiber`): `GcHeap::check_thread`.
+  - `src/runtime/store.rs` (`validate_sync_call`): a set's store on a
+    fiber takes a sync call; `src/runtime/fiber.rs` (`resume_fiber`): a
+    set's store's fiber resumes on its set's thread only
+    (`SetShared::check_thread`, `src/runtime/vm/gc/enabled/elise.rs`)
+    ("A sync call on a set's store's fiber").
   - `src/runtime/vm/gc/gc_runtime.rs`: `GcRuntime::register_type` and
     `unregister_type`; `GcHeap::write_gc_ref_in`, `init_gc_ref_in` (a
     barrier given the object, which a generational collector needs) and
